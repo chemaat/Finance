@@ -221,7 +221,9 @@ def read_gbm_holdings(source: Path | BytesIO, source_name: str | None = None) ->
         & ~df["ticker"].str.startswith("BI")
         & ~lower_original.str.startswith("EFEC")
     )
-    df["currency"] = df["ticker"].map(infer_ticker_currency)
+    df["instrument_currency"] = df["ticker"].map(infer_ticker_currency)
+    # GBM export monetary fields are already reported in portfolio currency (MXN).
+    df["currency"] = MXN_CURRENCY
     df["market_value"] = df["market_value"].fillna(0.0)
     df["quantity"] = df["quantity"].fillna(0.0)
     return df
@@ -373,20 +375,21 @@ def compute_portfolio_value_series(
     matrix = pd.DataFrame(index=close_prices.index)
     for row in market_assets.itertuples(index=False):
         matrix[row.ticker] = close_prices[row.ticker] * float(row.quantity)
+    matrix = matrix.dropna(how="any")
+    if matrix.empty:
+        raise ValueError("Price history is incomplete for the selected date range.")
     portfolio_value = matrix.sum(axis=1)
-    static_holdings = holdings.loc[~holdings["has_price_history"], ["market_value", "currency"]]
+    static_holdings = holdings.loc[~holdings["has_price_history"], ["market_value"]]
     if not static_holdings.empty:
         static_series = pd.Series(0.0, index=close_prices.index)
         for row in static_holdings.itertuples(index=False):
             row_series = pd.Series(float(row.market_value), index=close_prices.index)
             if fx_series is not None:
                 aligned_fx = fx_series.reindex(close_prices.index).ffill().bfill()
-                if base_currency == USD_CURRENCY and row.currency == MXN_CURRENCY:
+                if base_currency == USD_CURRENCY:
                     row_series = row_series / aligned_fx
-                elif base_currency == MXN_CURRENCY and row.currency == USD_CURRENCY:
-                    row_series = row_series * aligned_fx
             static_series = static_series + row_series
-        portfolio_value = portfolio_value + static_series
+        portfolio_value = portfolio_value + static_series.reindex(portfolio_value.index)
     return portfolio_value.rename(holdings["portfolio_name"].iat[0])
 
 
@@ -398,14 +401,10 @@ def build_allocation_table(
     allocation = holdings.copy()
     allocation["market_value_native"] = allocation["market_value"]
     if fx_spot and not np.isclose(fx_spot, 0.0):
-        is_mxn = allocation["currency"] == MXN_CURRENCY
         price_columns = ["average_cost", "market_price", "market_value"]
         if base_currency == USD_CURRENCY:
             for column in price_columns:
-                allocation.loc[is_mxn, column] = allocation.loc[is_mxn, column] / fx_spot
-        else:
-            for column in price_columns:
-                allocation.loc[~is_mxn, column] = allocation.loc[~is_mxn, column] * fx_spot
+                allocation[column] = allocation[column] / fx_spot
     total_value = allocation["market_value"].sum()
     allocation["weight"] = np.where(total_value > 0, allocation["market_value"] / total_value, np.nan)
     allocation["display_currency"] = base_currency
