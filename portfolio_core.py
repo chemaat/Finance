@@ -146,8 +146,15 @@ def infer_ticker_currency(ticker: str) -> str:
     return USD_CURRENCY
 
 
-def read_gbm_holdings(path: Path) -> pd.DataFrame:
-    raw = pd.read_excel(path, sheet_name=0, header=None)
+def read_gbm_holdings(source: Path | BytesIO, source_name: str | None = None) -> pd.DataFrame:
+    raw = pd.read_excel(source, sheet_name=0, header=None)
+    if source_name is not None:
+        file_name = source_name
+    elif isinstance(source, Path):
+        file_name = source.name
+    else:
+        file_name = getattr(source, "name", "uploaded_portfolio.xlsx")
+    portfolio_name = Path(file_name).stem
     records: list[dict[str, object]] = []
     current_section = "Unclassified"
     current_headers: list[str] | None = None
@@ -179,13 +186,13 @@ def read_gbm_holdings(path: Path) -> pd.DataFrame:
         if not ticker:
             continue
         row_data["section"] = current_section
-        row_data["source_file"] = path.name
-        row_data["portfolio_name"] = path.stem
+        row_data["source_file"] = file_name
+        row_data["portfolio_name"] = portfolio_name
         records.append(row_data)
 
     df = pd.DataFrame(records)
     if df.empty:
-        raise ValueError(f"No holdings detected in {path}")
+        raise ValueError(f"No holdings detected in {file_name}")
 
     if "asset_name" not in df.columns:
         df["asset_name"] = df["ticker"]

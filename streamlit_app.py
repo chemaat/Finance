@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +29,7 @@ from portfolio_core import (
     fetch_price_history,
     format_display_table,
     prepare_analysis,
+    read_gbm_holdings,
 )
 
 
@@ -43,13 +45,22 @@ def load_portfolios_cached(file_paths: tuple[str, ...]) -> dict[str, pd.DataFram
     return aggregate_portfolios([Path(path) for path in file_paths])
 
 
+@st.cache_data(show_spinner=False)
+def load_uploaded_portfolios_cached(files: tuple[tuple[str, bytes], ...]) -> dict[str, pd.DataFrame]:
+    portfolios: dict[str, pd.DataFrame] = {}
+    for file_name, content in files:
+        holdings = read_gbm_holdings(BytesIO(content), source_name=file_name)
+        portfolios[Path(file_name).stem] = holdings
+    return portfolios
+
+
 @st.cache_data(show_spinner=True, ttl=60 * 60 * 4)
 def load_market_data_cached(
-    file_paths: tuple[str, ...],
+    portfolio_frames: tuple[tuple[str, bytes], ...],
     benchmark_labels: tuple[str, ...],
     start_date: str,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    portfolios = load_portfolios_cached(file_paths)
+    portfolios = load_uploaded_portfolios_cached(portfolio_frames)
     asset_tickers = {
         ticker
         for holdings in portfolios.values()
@@ -95,23 +106,24 @@ st.title("Portfolio Monitoring Dashboard")
 st.caption("Interactive benchmark comparison for GBM portfolio exports with currency-aware return series.")
 
 candidate_files = available_portfolio_files()
-if not candidate_files:
-    st.error("No GBM Excel exports were found in this workspace or Downloads.")
-    st.stop()
-
 default_paths = tuple(str(path) for path in candidate_files[: min(5, len(candidate_files))])
 
 with st.sidebar:
     st.header("Controls")
-    selected_files = st.multiselect(
-        "Portfolio files",
-        options=[str(path) for path in candidate_files],
-        default=list(default_paths),
-        format_func=lambda value: Path(value).name,
+    uploaded_files = st.file_uploader(
+        "Upload GBM Excel files",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        help="Upload one or more GBM portfolio export files.",
     )
-    if not selected_files:
-        st.warning("Select at least one portfolio file.")
-        st.stop()
+    selected_files: list[str] = []
+    if candidate_files:
+        selected_files = st.multiselect(
+            "Or use local files",
+            options=[str(path) for path in candidate_files],
+            default=list(default_paths),
+            format_func=lambda value: Path(value).name,
+        )
 
     benchmark_options = list(DEFAULT_BENCHMARKS.keys())
     selected_benchmarks = st.multiselect(
@@ -128,9 +140,23 @@ with st.sidebar:
     risk_free_rate_pct = st.number_input("Risk-free rate (%)", min_value=0.0, max_value=20.0, value=0.0, step=0.25)
     lookback_years = st.selectbox("Max history", options=[1, 2, 3, 5], index=3)
 
-portfolio_frames = load_portfolios_cached(tuple(selected_files))
+portfolio_frames: dict[str, pd.DataFrame] = {}
+portfolio_cache_key: tuple[tuple[str, bytes], ...]
+if uploaded_files:
+    portfolio_cache_key = tuple((file.name, file.getvalue()) for file in uploaded_files)
+    portfolio_frames = load_uploaded_portfolios_cached(portfolio_cache_key)
+elif selected_files:
+    portfolio_frames = load_portfolios_cached(tuple(selected_files))
+    portfolio_cache_key = tuple(
+        (name, Path(name).read_bytes())
+        for name in selected_files
+    )
+else:
+    st.error("Upload one or more GBM Excel exports to use the dashboard.")
+    st.stop()
+
 history_start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=lookback_years)).date().isoformat()
-price_history, fx_series = load_market_data_cached(tuple(selected_files), tuple(selected_benchmarks), history_start)
+price_history, fx_series = load_market_data_cached(portfolio_cache_key, tuple(selected_benchmarks), history_start)
 if price_history.empty:
     st.error("No market data was returned. Try again later.")
     st.stop()
