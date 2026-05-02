@@ -3,6 +3,10 @@
 This workspace now has two entry points:
 
 - `portfolio_core.py`: reusable analytics module for loading GBM exports, normalizing holdings, downloading market and FX data, computing metrics, and exporting Excel.
+- `returns_engine.py`: holdings-based return reconstruction, absolute return vs cost basis, synthetic XIRR, and attribution.
+- `benchmark_engine.py`: benchmark selection, date alignment, and period-return comparison tables.
+- `risk_engine.py`: institutional risk metrics such as beta, alpha, Sortino, VaR, CVaR, tracking error, and rolling measures.
+- `market_snapshot.py`: daily market snapshot with major indices, ETFs, and top movers.
 - `portfolio_analysis.py`: CLI wrapper for batch CSV and Excel exports.
 - `streamlit_app.py`: interactive dashboard with cached market data, portfolio and benchmark selectors, a date filter, KPI cards, Plotly charts, and downloads.
 
