@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Reusable premium UI components for Streamlit."""
+
+from __future__ import annotations
+
+import math
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from theme_engine import PRODUCT_NAME, PRODUCT_TAGLINE
+
+
+def render_shell_topbar(last_updated: str, benchmark_label: str, portfolio_label: str) -> None:
+    st.markdown(
+        f"""
+        <div class="shell-topbar">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;">
+            <div class="brand-lockup">
+              <div class="brand-mark">AP</div>
+              <div>
+                <p class="brand-title">{PRODUCT_NAME}</p>
+                <p class="brand-subtitle">{PRODUCT_TAGLINE}</p>
+              </div>
+            </div>
+            <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+              <span class="nav-chip">Portfolio: {portfolio_label}</span>
+              <span class="nav-chip">Benchmark: {benchmark_label}</span>
+              <span class="nav-chip">Last Updated: {last_updated}</span>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_kpi_card(label: str, value: str, footnote: str = "", tone: str = "flat") -> None:
+    tone_class = {
+        "up": "value-up",
+        "down": "value-down",
+        "flat": "value-flat",
+    }.get(tone, "value-flat")
+    st.markdown(
+        f"""
+        <div class="kpi-card">
+          <div class="kpi-label">{label}</div>
+          <div class="kpi-value {tone_class}">{value}</div>
+          <div class="kpi-foot">{footnote}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_panel_header(title: str, subtitle: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="panel-card">
+          <div class="section-title">{title}</div>
+          <div class="section-subtitle">{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_method_note(text: str) -> None:
+    st.markdown(f'<div class="method-note">{text}</div>', unsafe_allow_html=True)
+
+
+def tone_from_value(value: float) -> str:
+    if pd.isna(value):
+        return "flat"
+    if value > 0:
+        return "up"
+    if value < 0:
+        return "down"
+    return "flat"
+
+
+def dataframe_toolbar(title: str, subtitle: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="toolbar-card">
+          <div class="section-title">{title}</div>
+          <div class="section-subtitle">{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def filter_dataframe(frame: pd.DataFrame, query: str) -> pd.DataFrame:
+    if not query.strip():
+        return frame
+    mask = pd.Series(False, index=frame.index)
+    q = query.lower().strip()
+    for column in frame.columns:
+        mask = mask | frame[column].astype(str).str.lower().str.contains(q, na=False)
+    return frame.loc[mask]
+
+
+def paginate_dataframe(frame: pd.DataFrame, page_size: int, page_number: int) -> pd.DataFrame:
+    start = page_size * max(page_number, 0)
+    end = start + page_size
+    return frame.iloc[start:end]
+
+
+def apply_plotly_theme(fig: go.Figure, theme: dict[str, str]) -> go.Figure:
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=theme["text"], family='"Inter", "IBM Plex Sans", system-ui'),
+        margin=dict(l=24, r=24, t=58, b=24),
+        hoverlabel=dict(
+            bgcolor=theme["panel_strong"],
+            font=dict(color=theme["text"]),
+            bordercolor=theme["border"],
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            borderwidth=0,
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+    )
+    fig.update_xaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor=theme["grid"], zeroline=False)
+    return fig

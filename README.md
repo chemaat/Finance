@@ -1,4 +1,6 @@
-# Portfolio Monitoring Tool
+# Aurelia Portfolio OS
+
+Institutional-style portfolio intelligence for GBM holdings with premium Streamlit UX, configurable benchmarking, advanced risk analytics, and a market snapshot layer.
 
 This workspace now has two entry points:
 
@@ -7,8 +9,10 @@ This workspace now has two entry points:
 - `benchmark_engine.py`: benchmark selection, date alignment, and period-return comparison tables.
 - `risk_engine.py`: institutional risk metrics such as beta, alpha, Sortino, VaR, CVaR, tracking error, and rolling measures.
 - `market_snapshot.py`: daily market snapshot with major indices, ETFs, and top movers.
+- `theme_engine.py`: design tokens, dark/light theming, shell styling, and premium visual system.
+- `ui_components.py`: reusable UI primitives for KPI cards, shell top bar, data grid helpers, and chart theming.
 - `portfolio_analysis.py`: CLI wrapper for batch CSV and Excel exports.
-- `streamlit_app.py`: interactive dashboard with cached market data, portfolio and benchmark selectors, a date filter, KPI cards, Plotly charts, and downloads.
+- `streamlit_app.py`: premium command center UI with executive navigation, KPI surfaces, benchmark overlays, risk dashboard, holdings explorer, and market snapshot.
 
 ## Recommended Deployment
 

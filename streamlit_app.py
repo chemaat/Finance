@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Institutional-style Streamlit dashboard for GBM portfolio analytics."""
+"""Premium institutional Streamlit UI for portfolio analytics."""
 
 from __future__ import annotations
 
+import math
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -48,9 +49,20 @@ from returns_engine import (
     compute_snapshot_cost_metrics,
 )
 from risk_engine import build_risk_report, drawdown_series, rolling_beta, rolling_volatility
+from theme_engine import PRODUCT_NAME, PRODUCT_TAGLINE, inject_global_styles
+from ui_components import (
+    apply_plotly_theme,
+    dataframe_toolbar,
+    filter_dataframe,
+    paginate_dataframe,
+    render_kpi_card,
+    render_method_note,
+    render_shell_topbar,
+    tone_from_value,
+)
 
 
-st.set_page_config(page_title="Portfolio Analytics", page_icon=":bar_chart:", layout="wide")
+st.set_page_config(page_title=PRODUCT_NAME, page_icon=":chart_with_upwards_trend:", layout="wide")
 
 
 def to_csv_bytes(frame: pd.DataFrame) -> bytes:
@@ -67,11 +79,7 @@ def load_uploaded_portfolios_cached(files: tuple[tuple[str, bytes], ...]) -> dic
 
 @st.cache_data(show_spinner=False)
 def load_local_portfolios_cached(file_paths: tuple[str, ...]) -> dict[str, pd.DataFrame]:
-    portfolios: dict[str, pd.DataFrame] = {}
-    for file_path in file_paths:
-        path = Path(file_path)
-        portfolios[path.stem] = read_gbm_holdings(path)
-    return portfolios
+    return {Path(path).stem: read_gbm_holdings(Path(path)) for path in file_paths}
 
 
 @st.cache_data(show_spinner=True, ttl=60 * 60 * 4)
@@ -89,7 +97,7 @@ def load_market_bundle_cached(
 
 
 @st.cache_data(show_spinner=True, ttl=60 * 30)
-def load_snapshot_cached(as_of: str) -> dict[str, object]:
+def load_market_snapshot_cached(as_of: str) -> dict[str, object]:
     return build_market_snapshot(pd.Timestamp(as_of))
 
 
@@ -101,57 +109,99 @@ def format_num(value: float, digits: int = 2) -> str:
     return "N/A" if pd.isna(value) else f"{value:,.{digits}f}"
 
 
-def build_line_chart(frame: pd.DataFrame, title: str, yaxis_title: str, percent: bool = False) -> go.Figure:
+def format_currency(value: float) -> str:
+    return "N/A" if pd.isna(value) else f"{value:,.2f}"
+
+
+def slice_by_timeframe(frame: pd.DataFrame | pd.Series, timeframe: str) -> pd.DataFrame | pd.Series:
+    if frame is None or len(frame) == 0:
+        return frame
+    end = frame.index.max()
+    if timeframe == "1D":
+        start = end - pd.DateOffset(days=2)
+    elif timeframe == "1W":
+        start = end - pd.DateOffset(weeks=1)
+    elif timeframe == "1M":
+        start = end - pd.DateOffset(months=1)
+    elif timeframe == "3M":
+        start = end - pd.DateOffset(months=3)
+    elif timeframe == "YTD":
+        start = pd.Timestamp(year=end.year, month=1, day=1)
+    elif timeframe == "1Y":
+        start = end - pd.DateOffset(years=1)
+    else:
+        return frame
+    return frame.loc[frame.index >= start]
+
+
+def build_line_chart(frame: pd.DataFrame, title: str, yaxis_title: str, theme: dict[str, str], percent: bool = False) -> go.Figure:
     plot_frame = frame.reset_index().rename(columns={"index": "Date"})
     plot_frame = plot_frame.melt(id_vars="Date", var_name="Series", value_name="Value").dropna()
     fig = px.line(plot_frame, x="Date", y="Value", color="Series", title=title)
-    fig.update_layout(margin=dict(l=20, r=20, t=60, b=20), hovermode="x unified")
+    fig.update_traces(line=dict(width=2.4))
     fig.update_yaxes(title_text=yaxis_title, tickformat=".1%" if percent else None)
-    return fig
+    fig.update_layout(hovermode="x unified")
+    return apply_plotly_theme(fig, theme)
 
 
-def build_treemap(attribution: pd.DataFrame) -> go.Figure:
-    frame = attribution.copy()
-    frame["label"] = frame["original_ticker"]
+def build_area_chart(series: pd.Series, title: str, theme: dict[str, str], percent: bool = False) -> go.Figure:
+    frame = series.dropna().reset_index()
+    frame.columns = ["Date", "Value"]
+    fig = px.area(frame, x="Date", y="Value", title=title)
+    fig.update_traces(line=dict(width=2.4), fillcolor="rgba(77,163,255,0.20)")
+    fig.update_yaxes(tickformat=".1%" if percent else None)
+    return apply_plotly_theme(fig, theme)
+
+
+def build_donut_chart(frame: pd.DataFrame, theme: dict[str, str]) -> go.Figure:
+    fig = px.pie(
+        frame.sort_values("weight", ascending=False).head(10),
+        values="weight",
+        names="original_ticker",
+        hole=0.68,
+        title="Allocation by Asset",
+    )
+    fig.update_traces(textinfo="label+percent", pull=[0.02] * min(len(frame), 10))
+    return apply_plotly_theme(fig, theme)
+
+
+def build_treemap(frame: pd.DataFrame, theme: dict[str, str]) -> go.Figure:
+    local = frame.copy()
+    local["label"] = local["original_ticker"]
     fig = px.treemap(
-        frame,
+        local,
         path=[px.Constant("Portfolio"), "section", "label"],
         values="market_value",
         color="contribution_to_return",
         color_continuous_scale="RdYlGn",
-        title="Holdings Heatmap / Attribution",
+        title="Holdings Heatmap",
     )
-    fig.update_layout(margin=dict(l=10, r=10, t=50, b=10))
-    return fig
+    return apply_plotly_theme(fig, theme)
 
 
-def build_allocation_bar(attribution: pd.DataFrame) -> go.Figure:
-    top = attribution.sort_values("market_value", ascending=False).head(12).iloc[::-1]
+def build_attribution_chart(frame: pd.DataFrame, theme: dict[str, str]) -> go.Figure:
     fig = px.bar(
-        top,
-        x="weight",
-        y="original_ticker",
-        orientation="h",
-        color="section",
-        title="Allocation Breakdown",
-    )
-    fig.update_xaxes(tickformat=".1%")
-    fig.update_layout(margin=dict(l=20, r=20, t=60, b=20))
-    return fig
-
-
-def build_attribution_bar(attribution: pd.DataFrame) -> go.Figure:
-    top = attribution.sort_values("contribution_to_return", ascending=False)
-    fig = px.bar(
-        top,
+        frame.sort_values("contribution_to_return", ascending=False),
         x="original_ticker",
         y="contribution_to_return",
         color="section",
         title="Performance Attribution",
     )
     fig.update_yaxes(tickformat=".1%")
-    fig.update_layout(margin=dict(l=20, r=20, t=60, b=20))
-    return fig
+    return apply_plotly_theme(fig, theme)
+
+
+def build_correlation_heatmap(frame: pd.DataFrame, theme: dict[str, str]) -> go.Figure:
+    corr = frame.corr()
+    fig = px.imshow(
+        corr,
+        text_auto=".2f",
+        color_continuous_scale="RdBu",
+        zmin=-1,
+        zmax=1,
+        title="Correlation Matrix",
+    )
+    return apply_plotly_theme(fig, theme)
 
 
 def build_snapshot_table(frame: pd.DataFrame) -> pd.DataFrame:
@@ -165,46 +215,55 @@ def build_snapshot_table(frame: pd.DataFrame) -> pd.DataFrame:
     return display
 
 
-st.title("Portfolio Monitoring Dashboard")
-st.caption("Institutional analytics for GBM holdings with explicit methodology, benchmarking, and market snapshot.")
+def build_sector_proxy(frame: pd.DataFrame) -> pd.DataFrame:
+    sector = frame.groupby("section", as_index=False)["market_value"].sum()
+    sector["weight"] = sector["market_value"] / sector["market_value"].sum()
+    return sector.rename(columns={"section": "sector_proxy"})
+
+
+theme_mode = st.session_state.get("theme_mode", "Dark")
+theme = inject_global_styles(theme_mode)
 
 candidate_files = available_portfolio_files()
 default_paths = tuple(str(path) for path in candidate_files[: min(5, len(candidate_files))])
 
 with st.sidebar:
-    st.header("Controls")
-    uploaded_files = st.file_uploader(
-        "Upload GBM Excel files",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        help="Upload one or more GBM holdings exports.",
+    st.markdown("### Aurelia")
+    st.caption("Premium multi-asset portfolio analytics")
+    st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
+
+    nav_section = st.radio(
+        "Workspace",
+        options=[
+            "Dashboard",
+            "Portfolio Analytics",
+            "Risk Metrics",
+            "Benchmarking",
+            "Holdings",
+            "Market Snapshot",
+            "Settings",
+        ],
+        index=0,
+        label_visibility="collapsed",
     )
+
+    st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
+    uploaded_files = st.file_uploader("Upload GBM Excel files", type=["xlsx"], accept_multiple_files=True)
     selected_files: list[str] = []
     if candidate_files:
         selected_files = st.multiselect(
-            "Or use local files",
+            "Local portfolio files",
             options=[str(path) for path in candidate_files],
             default=list(default_paths),
             format_func=lambda value: Path(value).name,
         )
 
-    primary_options = list(DEFAULT_BENCHMARKS.keys()) + ["Custom"]
-    primary_benchmark_label = st.selectbox("Primary benchmark", options=primary_options, index=0)
-    custom_benchmark_ticker = ""
-    if primary_benchmark_label == "Custom":
-        custom_benchmark_ticker = st.text_input("Custom benchmark ticker", value="SPY").strip().upper()
-
-    peer_labels = st.multiselect(
-        "Comparison benchmarks",
-        options=list(DEFAULT_BENCHMARKS.keys()),
-        default=["Nasdaq 100", "Total World", "IPC Mexico"],
-    )
+    st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
+    st.caption("Portfolio controls")
     base_currency = st.selectbox("Display currency", options=["MXN", "USD"], index=0 if DEFAULT_BASE_CURRENCY == "MXN" else 1)
     risk_free_rate_pct = st.number_input("Risk-free rate (%)", min_value=0.0, max_value=25.0, value=0.0, step=0.25)
     lookback_years = st.selectbox("Max history", options=[1, 2, 3, 5], index=3)
 
-portfolio_frames: dict[str, pd.DataFrame] = {}
-portfolio_cache_key: tuple[tuple[str, bytes], ...]
 if uploaded_files:
     portfolio_cache_key = tuple((file.name, file.getvalue()) for file in uploaded_files)
     portfolio_frames = load_uploaded_portfolios_cached(portfolio_cache_key)
@@ -212,8 +271,39 @@ elif selected_files:
     portfolio_cache_key = tuple((path, Path(path).read_bytes()) for path in selected_files)
     portfolio_frames = load_local_portfolios_cached(tuple(selected_files))
 else:
-    st.error("Upload one or more GBM Excel exports to use the dashboard.")
+    render_shell_topbar("Unavailable", "Unavailable", "No portfolio loaded")
+    st.markdown(
+        """
+        <div class="panel-card" style="padding:2rem 1.4rem 1.2rem 1.4rem;">
+          <div class="section-title">Load a Portfolio</div>
+          <div class="section-subtitle">Upload GBM holdings exports to launch the command center. Cloud deployments cannot access your local Downloads folder, so file upload is the preferred workflow.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.stop()
+
+portfolio_names = list(portfolio_frames.keys())
+default_portfolio = portfolio_names[0]
+
+top_left, top_mid, top_right, top_search = st.columns([2.3, 1.1, 1.2, 1.4])
+with top_left:
+    selected_portfolio = st.selectbox("Portfolio", options=portfolio_names, index=0)
+with top_mid:
+    primary_options = list(DEFAULT_BENCHMARKS.keys()) + ["Custom"]
+    primary_benchmark_label = st.selectbox("Primary benchmark", options=primary_options, index=0)
+with top_right:
+    peer_labels = st.multiselect(
+        "Peer benchmarks",
+        options=list(DEFAULT_BENCHMARKS.keys()),
+        default=["Nasdaq 100", "Total World", "IPC Mexico"],
+    )
+with top_search:
+    holdings_search = st.text_input("Search ticker / holding", value="")
+
+custom_benchmark_ticker = ""
+if primary_benchmark_label == "Custom":
+    custom_benchmark_ticker = st.text_input("Custom benchmark ticker", value="SPY").strip().upper()
 
 try:
     benchmark_selection: BenchmarkSelection = build_benchmark_selection(
@@ -237,12 +327,17 @@ if price_history.empty:
 
 available_start = price_history.index.min().date()
 available_end = price_history.index.max().date()
-selected_range = st.sidebar.date_input(
-    "Date range",
-    value=(available_start, available_end),
-    min_value=available_start,
-    max_value=available_end,
-)
+date_col, tf_col = st.columns([2.2, 1.2])
+with date_col:
+    selected_range = st.date_input(
+        "Date range",
+        value=(available_start, available_end),
+        min_value=available_start,
+        max_value=available_end,
+    )
+with tf_col:
+    timeframe = st.radio("Chart timeframe", options=["1M", "3M", "YTD", "1Y", "Max"], horizontal=True, index=3)
+
 if isinstance(selected_range, tuple) and len(selected_range) == 2:
     start_date = pd.Timestamp(selected_range[0])
     end_date = pd.Timestamp(selected_range[1])
@@ -258,17 +353,7 @@ filtered_fx = fx_series.loc[(fx_series.index >= start_date) & (fx_series.index <
 converted_prices = convert_price_frame(filtered_prices, base_currency=base_currency, fx_series=filtered_fx).sort_index().ffill()
 fx_spot = float(filtered_fx.dropna().iloc[-1]) if not filtered_fx.empty and not filtered_fx.dropna().empty else None
 
-benchmark_prices = converted_prices.rename(columns={ticker: label for label, ticker in benchmark_selection.comparison_map.items()})
-benchmark_series_map = {
-    label: benchmark_prices[label].dropna()
-    for label in benchmark_selection.comparison_map
-    if label in benchmark_prices.columns
-}
-
-portfolio_names = list(portfolio_frames.keys())
-selected_portfolio = st.selectbox("Portfolio", options=portfolio_names)
 holdings = portfolio_frames[selected_portfolio]
-
 portfolio_value_series = compute_portfolio_value_series(
     holdings=holdings,
     converted_prices=converted_prices,
@@ -283,13 +368,14 @@ synthetic_mwr = build_synthetic_money_weighted_return(holdings, portfolio_value_
 attribution = build_performance_attribution(holdings, base_currency=base_currency, fx_spot=fx_spot)
 attribution["weight"] = attribution["market_value"] / attribution["market_value"].sum() if attribution["market_value"].sum() else 0.0
 
-primary_benchmark_returns = pd.Series(dtype=float)
-if benchmark_selection.primary_label in benchmark_series_map:
-    primary_benchmark_values = normalize_to_growth_of_one(benchmark_series_map[benchmark_selection.primary_label]).dropna()
-    primary_benchmark_returns = compute_daily_returns(primary_benchmark_values)
-else:
-    primary_benchmark_values = pd.Series(dtype=float)
-
+benchmark_prices = converted_prices.rename(columns={ticker: label for label, ticker in benchmark_selection.comparison_map.items()})
+benchmark_series_map = {
+    label: benchmark_prices[label].dropna()
+    for label in benchmark_selection.comparison_map
+    if label in benchmark_prices.columns
+}
+primary_benchmark_values = benchmark_series_map.get(benchmark_selection.primary_label, pd.Series(dtype=float))
+primary_benchmark_returns = compute_daily_returns(primary_benchmark_values) if not primary_benchmark_values.empty else pd.Series(dtype=float)
 risk_report = build_risk_report(
     values=portfolio_value_series,
     portfolio_returns=portfolio_returns,
@@ -297,9 +383,10 @@ risk_report = build_risk_report(
     risk_free_rate=risk_free_rate_pct / 100.0,
 )
 
-comparison_frame = dict(benchmark_series_map)
-comparison_frame[selected_portfolio] = portfolio_value_series
-normalized_comparison = normalize_to_growth_of_one(pd.DataFrame(comparison_frame).sort_index()).dropna(how="all")
+comparison_series_map = dict(benchmark_series_map)
+comparison_series_map[selected_portfolio] = portfolio_value_series
+normalized_comparison = normalize_to_growth_of_one(pd.DataFrame(comparison_series_map).sort_index()).dropna(how="all")
+chart_comparison = slice_by_timeframe(normalized_comparison, timeframe)
 
 benchmark_returns_df = pd.DataFrame({name: compute_daily_returns(series) for name, series in benchmark_series_map.items()}).dropna(how="all")
 comparison_table = build_benchmark_comparison_table(
@@ -307,186 +394,233 @@ comparison_table = build_benchmark_comparison_table(
     benchmark_returns_df,
     benchmark_ticker_map=benchmark_selection.comparison_map,
 )
-period_table = build_period_return_table(comparison_frame)
-rolling_vol = rolling_volatility(portfolio_returns).rename(selected_portfolio).to_frame()
+period_table = build_period_return_table(comparison_series_map)
+rolling_vol_frame = rolling_volatility(portfolio_returns).rename(selected_portfolio).to_frame()
+rolling_vol_frame = slice_by_timeframe(rolling_vol_frame, timeframe)
 rolling_beta_frame = pd.DataFrame()
 if not primary_benchmark_returns.empty:
     rolling_beta_frame = rolling_beta(portfolio_returns, primary_benchmark_returns).rename(selected_portfolio).to_frame()
+    rolling_beta_frame = slice_by_timeframe(rolling_beta_frame, timeframe)
 
 diagnostics = build_returns_diagnostics(has_real_cash_flows=False)
-missing_tickers = sorted(
-    {
-        ticker
-        for ticker in holdings.loc[holdings["is_market_asset"] & holdings["has_price_history"], "ticker"].tolist()
-        if ticker not in converted_prices.columns
-    }
-)
-snapshot = load_snapshot_cached(end_date.date().isoformat())
+snapshot = load_market_snapshot_cached(end_date.date().isoformat())
 last_updated_candidates = [portfolio_value_series.index.max()]
 if snapshot["last_updated"] is not None:
     last_updated_candidates.append(pd.Timestamp(snapshot["last_updated"]))
 last_updated = max(last_updated_candidates)
+last_updated_label = last_updated.strftime("%Y-%m-%d %H:%M America/Monterrey")
+render_shell_topbar(last_updated_label, benchmark_selection.primary_label, selected_portfolio)
 
-st.caption(f"Last Updated: {last_updated.strftime('%Y-%m-%d %H:%M')} America/Monterrey")
-if missing_tickers:
-    st.warning(f"Missing market history for: {', '.join(missing_tickers)}. Metrics exclude those tickers from the reconstructed history.")
-for warning in snapshot["warnings"]:
-    st.warning(warning)
-
-market_left, market_right = st.columns((2, 1))
-with market_left:
-    st.subheader("Market Snapshot")
-    st.dataframe(build_snapshot_table(snapshot["indices"]), use_container_width=True, hide_index=True)
-    st.caption(f"Market snapshot last updated: {format_last_updated(snapshot['last_updated'])}")
-with market_right:
-    st.subheader("Top Movers")
-    gainers = build_snapshot_table(snapshot["top_gainers"])
-    losers = build_snapshot_table(snapshot["top_losers"])
-    st.markdown("`Top Gainers`")
-    st.dataframe(gainers, use_container_width=True, hide_index=True)
-    st.markdown("`Top Losers`")
-    st.dataframe(losers, use_container_width=True, hide_index=True)
+daily_pnl = portfolio_value_series.diff().iloc[-1] if len(portfolio_value_series) > 1 else np.nan
+daily_return = portfolio_returns.iloc[-1] if not portfolio_returns.empty else np.nan
+absolute_return = snapshot_metrics["snapshot_absolute_return"]
+holdings_cagr = reconstructed_metrics["cagr"]
 
 kpi_cols = st.columns(6)
-kpi_cols[0].metric("Absolute Return", format_pct(snapshot_metrics["snapshot_absolute_return"]))
-kpi_cols[1].metric("Holdings CAGR", format_pct(reconstructed_metrics["cagr"]))
-kpi_cols[2].metric("Alpha vs Primary", format_pct(risk_report.get("alpha", np.nan)))
-kpi_cols[3].metric("Beta vs Primary", format_num(risk_report.get("beta", np.nan)))
-kpi_cols[4].metric("Sharpe Ratio", format_num(risk_report.get("sharpe_ratio", np.nan)))
-kpi_cols[5].metric("Max Drawdown", format_pct(risk_report.get("max_drawdown", np.nan)))
+with kpi_cols[0]:
+    render_kpi_card("Portfolio Value", format_currency(snapshot_metrics["snapshot_total_value"]), base_currency)
+with kpi_cols[1]:
+    render_kpi_card("Daily P&L", format_currency(daily_pnl), format_pct(daily_return), tone_from_value(daily_pnl))
+with kpi_cols[2]:
+    render_kpi_card("Absolute Return", format_pct(absolute_return), "vs broker cost basis", tone_from_value(absolute_return))
+with kpi_cols[3]:
+    render_kpi_card("Holdings CAGR", format_pct(holdings_cagr), "reconstructed holdings path", tone_from_value(holdings_cagr))
+with kpi_cols[4]:
+    render_kpi_card("Alpha vs Primary", format_pct(risk_report.get("alpha", np.nan)), benchmark_selection.primary_label, tone_from_value(risk_report.get("alpha", np.nan)))
+with kpi_cols[5]:
+    render_kpi_card("Max Drawdown", format_pct(risk_report.get("max_drawdown", np.nan)), "peak-to-trough", tone_from_value(risk_report.get("max_drawdown", np.nan)))
 
-with st.expander("Methodology and Assumptions", expanded=False):
-    methodology_table = pd.DataFrame(
-        [{"metric": key, "definition": value} for key, value in diagnostics.methodology.items()]
-    )
-    st.dataframe(methodology_table, use_container_width=True, hide_index=True)
-    for warning in diagnostics.warnings:
-        st.warning(warning)
-    st.markdown(
-        f"""
-        Current dashboard conventions:
-        - `Absolute Return` uses broker cost basis from the uploaded GBM file.
-        - `Holdings CAGR`, daily return, drawdown, rolling beta and rolling volatility use a reconstructed historical path of today's holdings.
-        - `Synthetic MWR/XIRR`: `{format_pct(synthetic_mwr)}`.
-        - Dividends and splits are handled through adjusted market prices from the provider when available.
-        """
+if nav_section == "Dashboard":
+    render_method_note(
+        "This command center separates broker snapshot metrics from reconstructed historical analytics. Absolute return uses GBM cost basis today. Holdings CAGR, drawdown and benchmark overlays reconstruct the path of the current holdings through adjusted market prices."
     )
 
-summary_tab, risk_tab, attribution_tab, downloads_tab = st.tabs(
-    ["Executive Summary", "Risk & Benchmark", "Attribution", "Downloads"]
-)
-
-with summary_tab:
-    summary_frame = pd.DataFrame(
-        [
-            {
-                "portfolio": selected_portfolio,
-                "last_updated": last_updated.strftime("%Y-%m-%d"),
-                "snapshot_total_value": snapshot_metrics["snapshot_total_value"],
-                "snapshot_total_cost_basis": snapshot_metrics["snapshot_total_cost_basis"],
-                "snapshot_unrealized_pnl": snapshot_metrics["snapshot_unrealized_pnl"],
-                "absolute_return": snapshot_metrics["snapshot_absolute_return"],
-                "reconstructed_cumulative_return": reconstructed_metrics["cumulative_return"],
-                "cagr": reconstructed_metrics["cagr"],
-                "volatility": risk_report.get("volatility_annualized"),
-                "sharpe_ratio": risk_report.get("sharpe_ratio"),
-                "sortino_ratio": risk_report.get("sortino_ratio"),
-                "max_drawdown": risk_report.get("max_drawdown"),
-            }
-        ]
-    ).set_index("portfolio")
-    st.dataframe(format_display_table(summary_frame), use_container_width=True)
-
-    chart_left, chart_right = st.columns((2, 1))
-    with chart_left:
-        st.plotly_chart(build_line_chart(normalized_comparison, "Cumulative Returns", "Growth of 1.0"), use_container_width=True)
-    with chart_right:
-        st.plotly_chart(build_allocation_bar(attribution), use_container_width=True)
-
-    drawdown_frame = pd.DataFrame(
-        {selected_portfolio: portfolio_drawdown, **{label: drawdown_series(series) for label, series in benchmark_series_map.items()}}
-    ).dropna(how="all")
-    st.plotly_chart(build_line_chart(drawdown_frame, "Drawdown Curve", "Drawdown", percent=True), use_container_width=True)
-
-with risk_tab:
-    risk_frame = pd.DataFrame([risk_report], index=[selected_portfolio])
-    st.subheader("Risk Report")
-    st.dataframe(format_display_table(risk_frame), use_container_width=True)
-
-    st.subheader("Performance vs Benchmarks")
-    st.dataframe(format_display_table(comparison_table), use_container_width=True)
-
-    st.subheader("Period Returns")
-    st.dataframe(format_display_table(period_table), use_container_width=True)
-
-    chart_left, chart_right = st.columns(2)
-    with chart_left:
-        if not rolling_vol.empty:
-            st.plotly_chart(build_line_chart(rolling_vol, "Rolling Volatility (63D)", "Volatility", percent=True), use_container_width=True)
-    with chart_right:
-        if not rolling_beta_frame.empty:
-            st.plotly_chart(build_line_chart(rolling_beta_frame, "Rolling Beta (63D)", "Beta"), use_container_width=True)
-
-with attribution_tab:
-    attr_left, attr_right = st.columns((2, 1))
-    with attr_left:
-        st.plotly_chart(build_treemap(attribution), use_container_width=True)
-        st.plotly_chart(build_attribution_bar(attribution), use_container_width=True)
-    with attr_right:
-        sector_proxy = (
-            attribution.groupby("section", as_index=False)["market_value"].sum().rename(columns={"section": "sector_proxy"})
+    left, right = st.columns([2.0, 1.1])
+    with left:
+        st.plotly_chart(
+            build_line_chart(chart_comparison, "Relative Performance Command Chart", "Growth of 1.0", theme),
+            use_container_width=True,
         )
-        sector_proxy["weight"] = sector_proxy["market_value"] / sector_proxy["market_value"].sum()
-        st.subheader("Sector / Section Allocation")
-        st.dataframe(format_display_table(sector_proxy.set_index("sector_proxy")), use_container_width=True)
-        st.subheader("Holdings Detail")
-        display_attr = attribution[
-            [
-                "section",
-                "original_ticker",
-                "quantity",
-                "average_cost",
-                "market_value",
-                "pnl",
-                "contribution_to_return",
-            ]
-        ].copy()
-        st.dataframe(format_display_table(display_attr), use_container_width=True, hide_index=True)
+    with right:
+        st.plotly_chart(build_donut_chart(attribution, theme), use_container_width=True)
 
-with downloads_tab:
-    export_payload = {
-        "summary": summary_frame,
-        "benchmark_metrics": period_table,
-        "portfolio_results": {
-            selected_portfolio: type(
-                "ExportResult",
-                (),
+    lower_left, lower_mid, lower_right = st.columns([1.4, 1.05, 1.05])
+    with lower_left:
+        drawdown_frame = pd.DataFrame(
+            {selected_portfolio: portfolio_drawdown, **{label: drawdown_series(series) for label, series in benchmark_series_map.items()}}
+        ).dropna(how="all")
+        drawdown_frame = slice_by_timeframe(drawdown_frame, timeframe)
+        st.plotly_chart(build_line_chart(drawdown_frame, "Drawdown Overlay", "Drawdown", theme, percent=True), use_container_width=True)
+    with lower_mid:
+        st.plotly_chart(build_area_chart(rolling_vol_frame.iloc[:, 0], "Rolling Volatility", theme, percent=True), use_container_width=True)
+    with lower_right:
+        if not rolling_beta_frame.empty:
+            st.plotly_chart(build_area_chart(rolling_beta_frame.iloc[:, 0], "Rolling Beta", theme), use_container_width=True)
+
+    movers_left, movers_right = st.columns([1.3, 1])
+    with movers_left:
+        dataframe_toolbar("Benchmark Intelligence", "Configurable peer set with period returns and relative performance.")
+        st.dataframe(format_display_table(period_table), use_container_width=True)
+    with movers_right:
+        dataframe_toolbar("Market Movers", "Live daily snapshot of major indices and movers.")
+        st.dataframe(build_snapshot_table(snapshot["top_gainers"]), use_container_width=True, hide_index=True)
+        st.dataframe(build_snapshot_table(snapshot["top_losers"]), use_container_width=True, hide_index=True)
+
+elif nav_section == "Portfolio Analytics":
+    tabs = st.tabs(["Performance", "Attribution", "Methodology"])
+    with tabs[0]:
+        summary_frame = pd.DataFrame(
+            [
                 {
-                    "metrics": pd.Series({**snapshot_metrics, **reconstructed_metrics, **risk_report}),
-                    "comparison": comparison_table,
-                    "allocation": attribution,
-                    "value_series": portfolio_value_series,
-                    "return_series": portfolio_returns,
-                },
-            )()
-        },
-    }
-    c1, c2, c3 = st.columns(3)
-    c1.download_button(
-        "Download summary CSV",
-        data=to_csv_bytes(summary_frame),
-        file_name="portfolio_summary.csv",
-        mime="text/csv",
+                    "portfolio": selected_portfolio,
+                    "snapshot_total_value": snapshot_metrics["snapshot_total_value"],
+                    "snapshot_total_cost_basis": snapshot_metrics["snapshot_total_cost_basis"],
+                    "snapshot_unrealized_pnl": snapshot_metrics["snapshot_unrealized_pnl"],
+                    "absolute_return": snapshot_metrics["snapshot_absolute_return"],
+                    "reconstructed_cumulative_return": reconstructed_metrics["cumulative_return"],
+                    "cagr": reconstructed_metrics["cagr"],
+                    "synthetic_xirr": synthetic_mwr,
+                }
+            ]
+        ).set_index("portfolio")
+        st.dataframe(format_display_table(summary_frame), use_container_width=True)
+        st.plotly_chart(build_line_chart(chart_comparison, "Portfolio vs Benchmark Curve", "Growth of 1.0", theme), use_container_width=True)
+    with tabs[1]:
+        left, right = st.columns([1.3, 1])
+        with left:
+            st.plotly_chart(build_treemap(attribution, theme), use_container_width=True)
+        with right:
+            st.plotly_chart(build_attribution_chart(attribution, theme), use_container_width=True)
+    with tabs[2]:
+        for warning in diagnostics.warnings:
+            render_method_note(warning)
+        methodology_table = pd.DataFrame(
+            [{"Metric": key, "Formula / Interpretation": value} for key, value in diagnostics.methodology.items()]
+        )
+        st.dataframe(methodology_table, use_container_width=True, hide_index=True)
+
+elif nav_section == "Risk Metrics":
+    risk_frame = pd.DataFrame([risk_report], index=[selected_portfolio])
+    left, right = st.columns([1.1, 1.1])
+    with left:
+        dataframe_toolbar("Institutional Risk Panel", "Volatility, downside, drawdown, tail risk and recovery metrics.")
+        st.dataframe(format_display_table(risk_frame), use_container_width=True)
+    with right:
+        corr_frame = pd.DataFrame({selected_portfolio: portfolio_returns, **benchmark_returns_df.to_dict(orient="series")}).dropna(how="all")
+        if not corr_frame.empty:
+            st.plotly_chart(build_correlation_heatmap(corr_frame, theme), use_container_width=True)
+    bottom_left, bottom_right = st.columns(2)
+    with bottom_left:
+        st.plotly_chart(build_line_chart(slice_by_timeframe(pd.DataFrame({selected_portfolio: portfolio_drawdown}), timeframe), "Current Drawdown", "Drawdown", theme, percent=True), use_container_width=True)
+    with bottom_right:
+        st.plotly_chart(build_area_chart(rolling_vol_frame.iloc[:, 0], "Rolling Volatility", theme, percent=True), use_container_width=True)
+
+elif nav_section == "Benchmarking":
+    st.plotly_chart(build_line_chart(chart_comparison, "Benchmarking Matrix", "Growth of 1.0", theme), use_container_width=True)
+    left, right = st.columns([1.2, 1])
+    with left:
+        dataframe_toolbar("Relative Performance", "Absolute and excess return, alpha, beta, tracking error and information ratio.")
+        st.dataframe(format_display_table(comparison_table), use_container_width=True)
+    with right:
+        dataframe_toolbar("Period Returns", "YTD, trailing periods and since inception.")
+        st.dataframe(format_display_table(period_table), use_container_width=True)
+
+elif nav_section == "Holdings":
+    filtered_holdings = filter_dataframe(attribution, holdings_search)
+    page_size = st.selectbox("Rows per page", options=[10, 20, 50], index=1)
+    total_pages = max(1, math.ceil(len(filtered_holdings) / page_size)) if len(filtered_holdings) else 1
+    page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
+    page_frame = paginate_dataframe(filtered_holdings, page_size=page_size, page_number=int(page_number) - 1)
+    dataframe_toolbar("Holdings Grid", "Searchable holdings ledger with attribution and concentration metrics.")
+    st.dataframe(
+        format_display_table(
+            page_frame[
+                [
+                    "section",
+                    "original_ticker",
+                    "ticker",
+                    "quantity",
+                    "average_cost",
+                    "market_value",
+                    "pnl",
+                    "weight",
+                    "contribution_to_return",
+                ]
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
     )
-    c2.download_button(
-        "Download benchmark comparison CSV",
-        data=to_csv_bytes(comparison_table),
-        file_name="benchmark_comparison.csv",
-        mime="text/csv",
-    )
-    c3.download_button(
-        "Download Excel report",
-        data=export_analysis_to_excel(export_payload),
-        file_name="portfolio_dashboard_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    left, right = st.columns([1.1, 1])
+    with left:
+        st.plotly_chart(build_treemap(filtered_holdings if not filtered_holdings.empty else attribution, theme), use_container_width=True)
+    with right:
+        sector_proxy = build_sector_proxy(filtered_holdings if not filtered_holdings.empty else attribution)
+        st.dataframe(format_display_table(sector_proxy.set_index("sector_proxy")), use_container_width=True)
+
+elif nav_section == "Market Snapshot":
+    left, right = st.columns([1.25, 1])
+    with left:
+        dataframe_toolbar("Macro & Index Tape", "Last available trading session across US and Mexico instruments.")
+        st.dataframe(build_snapshot_table(snapshot["indices"]), use_container_width=True, hide_index=True)
+        st.dataframe(build_snapshot_table(snapshot["etfs"]), use_container_width=True, hide_index=True)
+    with right:
+        dataframe_toolbar("Gainers / Losers", "Cross-watchlist market movers.")
+        st.dataframe(build_snapshot_table(snapshot["top_gainers"]), use_container_width=True, hide_index=True)
+        st.dataframe(build_snapshot_table(snapshot["top_losers"]), use_container_width=True, hide_index=True)
+        st.caption(f"Snapshot stamp: {format_last_updated(snapshot['last_updated'])}")
+
+else:
+    with st.sidebar:
+        theme_mode = st.selectbox("Theme mode", options=["Dark", "Light"], index=0 if theme_mode == "Dark" else 1)
+        st.session_state["theme_mode"] = theme_mode
+        st.caption("Apply the theme selector and rerun for full-shell styling.")
+    left, right = st.columns([1.1, 1])
+    with left:
+        dataframe_toolbar("Workspace Settings", "Portfolio analytics assumptions and visual system controls.")
+        st.markdown(f"- Product: `{PRODUCT_NAME}`")
+        st.markdown(f"- Tagline: `{PRODUCT_TAGLINE}`")
+        st.markdown(f"- Base currency: `{base_currency}`")
+        st.markdown(f"- Primary benchmark: `{benchmark_selection.primary_label}`")
+        st.markdown(f"- Risk-free rate: `{risk_free_rate_pct:.2f}%`")
+        st.markdown(f"- Last updated: `{last_updated_label}`")
+    with right:
+        export_payload = {
+            "summary": pd.DataFrame(
+                [
+                    {
+                        "portfolio": selected_portfolio,
+                        "absolute_return": absolute_return,
+                        "cagr": holdings_cagr,
+                        "alpha": risk_report.get("alpha"),
+                        "beta": risk_report.get("beta"),
+                    }
+                ]
+            ).set_index("portfolio"),
+            "benchmark_metrics": period_table,
+            "portfolio_results": {
+                selected_portfolio: type(
+                    "ExportResult",
+                    (),
+                    {
+                        "metrics": pd.Series({**snapshot_metrics, **reconstructed_metrics, **risk_report}),
+                        "comparison": comparison_table,
+                        "allocation": attribution,
+                        "value_series": portfolio_value_series,
+                        "return_series": portfolio_returns,
+                    },
+                )()
+            },
+        }
+        st.download_button(
+            "Download Excel report",
+            data=export_analysis_to_excel(export_payload),
+            file_name="aurelia_portfolio_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.download_button(
+            "Download holdings CSV",
+            data=to_csv_bytes(attribution),
+            file_name="aurelia_holdings.csv",
+            mime="text/csv",
+        )
