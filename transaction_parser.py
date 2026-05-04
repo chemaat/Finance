@@ -74,6 +74,7 @@ class ParsedPortfolioLedger:
     trades: pd.DataFrame
     cash_flows: pd.DataFrame
     open_lots: pd.DataFrame
+    closed_lots: pd.DataFrame
     positions: pd.DataFrame
     diagnostics: dict[str, object]
 
@@ -308,8 +309,9 @@ def _build_cash_ledger(df: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
     return _infer_cash_scope(cash, trades)
 
 
-def _build_open_lots_fifo(trades: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+def _build_open_lots_fifo(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     open_lots: list[dict[str, object]] = []
+    closed_lots: list[dict[str, object]] = []
     warnings: list[str] = []
 
     for symbol, symbol_trades in trades.groupby("symbol"):
@@ -332,9 +334,32 @@ def _build_open_lots_fifo(trades: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
                 continue
 
             remaining_to_sell = float(trade.quantity)
+            sell_commission_per_share = (trade.commission_mxn / trade.quantity) if trade.quantity else 0.0
             while remaining_to_sell > 1e-9 and fifo_queue:
                 lot = fifo_queue[0]
                 matched = min(lot["remaining_quantity"], remaining_to_sell)
+                entry_cost_per_share = lot["entry_price_mxn"] + lot["commission_per_share_mxn"]
+                exit_proceeds_per_share = float(trade.trade_price_mxn) - float(sell_commission_per_share)
+                closed_lots.append(
+                    {
+                        "symbol": symbol,
+                        "buy_date": lot["lot_open_date"],
+                        "sell_date": trade.trade_date,
+                        "matched_quantity": matched,
+                        "entry_price_mxn": lot["entry_price_mxn"],
+                        "exit_price_mxn": float(trade.trade_price_mxn),
+                        "entry_commission_per_share_mxn": lot["commission_per_share_mxn"],
+                        "exit_commission_per_share_mxn": float(sell_commission_per_share),
+                        "entry_cost_per_share_mxn": entry_cost_per_share,
+                        "exit_proceeds_per_share_mxn": exit_proceeds_per_share,
+                        "cost_basis_mxn": matched * entry_cost_per_share,
+                        "proceeds_mxn": matched * exit_proceeds_per_share,
+                        "realized_pnl_mxn": matched * (exit_proceeds_per_share - entry_cost_per_share),
+                        "holding_days": (pd.Timestamp(trade.trade_date) - pd.Timestamp(lot["lot_open_date"])).days,
+                        "buy_row_id": lot["source_row_id"],
+                        "sell_row_id": trade.row_id,
+                    }
+                )
                 lot["remaining_quantity"] -= matched
                 remaining_to_sell -= matched
                 if lot["remaining_quantity"] <= 1e-9:
@@ -348,7 +373,7 @@ def _build_open_lots_fifo(trades: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
             if lot["remaining_quantity"] > 1e-9:
                 open_lots.append(lot)
 
-    return pd.DataFrame(open_lots), warnings
+    return pd.DataFrame(open_lots), pd.DataFrame(closed_lots), warnings
 
 
 def _build_positions_from_lots(open_lots: pd.DataFrame, ledger: pd.DataFrame) -> pd.DataFrame:
@@ -445,7 +470,7 @@ def parse_portfolio_transactions(source: Path | BytesIO | str, source_name: str 
 
     trades = _build_trade_ledger(ledger)
     cash_flows = _build_cash_ledger(ledger, trades)
-    open_lots, fifo_warnings = _build_open_lots_fifo(trades)
+    open_lots, closed_lots, fifo_warnings = _build_open_lots_fifo(trades)
     positions = _build_positions_from_lots(open_lots, ledger)
 
     diagnostics = {
@@ -454,8 +479,10 @@ def parse_portfolio_transactions(source: Path | BytesIO | str, source_name: str 
         "cash_flow_count": len(cash_flows),
         "quote_only_row_count": int((ledger["row_kind"] == "quote").sum()),
         "open_lot_count": len(open_lots),
+        "closed_lot_count": len(closed_lots),
         "external_cash_flow_total_mxn": cash_flows.loc[cash_flows["cash_flow_scope"] == "external", "cash_amount_mxn"].sum(),
         "internal_cash_flow_total_mxn": cash_flows.loc[cash_flows["cash_flow_scope"] == "internal", "cash_amount_mxn"].sum(),
+        "realized_pnl_total_mxn": closed_lots["realized_pnl_mxn"].sum() if not closed_lots.empty else 0.0,
         "warnings": fifo_warnings,
     }
 
@@ -464,6 +491,7 @@ def parse_portfolio_transactions(source: Path | BytesIO | str, source_name: str 
         trades=trades,
         cash_flows=cash_flows,
         open_lots=open_lots,
+        closed_lots=closed_lots,
         positions=positions,
         diagnostics=diagnostics,
     )

@@ -180,12 +180,12 @@ def build_performance_attribution(
 
 def build_returns_diagnostics(has_real_cash_flows: bool = False) -> ReturnDiagnostics:
     methodology = {
-        "absolute_return": "Current broker market value divided by current broker cost basis minus 1.",
-        "daily_return": "Percentage change of reconstructed portfolio market value based on current holdings and adjusted close prices.",
-        "cumulative_return": "Ending reconstructed value divided by starting reconstructed value minus 1.",
-        "cagr": "Annualized geometric return from reconstructed daily holdings path.",
-        "twr": "Holdings-based approximation only. True account-level TWR requires dated external cash flows.",
-        "mwr_xirr": "Reported only as a synthetic buy-and-hold IRR when real dated cash flows are unavailable.",
+        "absolute_return": "Current broker market value divided by current open-position cost basis minus 1.",
+        "daily_return": "For holdings snapshots: percentage change of reconstructed current-holdings value. For transaction ledgers: daily TWR return = (NAV_t - NAV_t-1 - external_flow_t) / NAV_t-1.",
+        "cumulative_return": "Chained daily return path. In transaction mode this is account-level TWR across the selected window.",
+        "cagr": "Annualized geometric return from the daily return path over the selected window.",
+        "twr": "True account-level TWR when dated external cash flows are available in the transaction ledger; otherwise a holdings-based approximation only.",
+        "mwr_xirr": "True XIRR when dated external cash flows are available; otherwise reported only as a synthetic buy-and-hold IRR.",
     }
     warnings = []
     if not has_real_cash_flows:
@@ -197,6 +197,13 @@ def build_returns_diagnostics(has_real_cash_flows: bool = False) -> ReturnDiagno
         )
         warnings.append(
             "Dividend and split adjustments are handled through adjusted market data from the price provider."
+        )
+    else:
+        warnings.append(
+            "Transaction-ledger mode computes account-level TWR from daily reconstructed NAV and external cash flows. Same-day flows are treated as dated daily flows because no intraday timestamp is available."
+        )
+        warnings.append(
+            "XIRR uses only external deposits and withdrawals plus ending NAV. Internal cash movements used to settle trades are excluded from investor cash flows."
         )
     return ReturnDiagnostics(methodology=methodology, warnings=warnings)
 

@@ -11,6 +11,7 @@ This workspace now has two entry points:
 
 - `portfolio_core.py`: reusable analytics module for loading GBM exports, normalizing holdings, downloading market and FX data, computing metrics, and exporting Excel.
 - `returns_engine.py`: holdings-based return reconstruction, absolute return vs cost basis, synthetic XIRR, and attribution.
+- `transaction_returns_engine.py`: transaction-ledger NAV reconstruction, daily TWR, true XIRR from external cash flows, and realized vs unrealized P&L analytics.
 - `benchmark_engine.py`: benchmark selection, date alignment, and period-return comparison tables.
 - `risk_engine.py`: institutional risk metrics such as beta, alpha, Sortino, VaR, CVaR, tracking error, and rolling measures.
 - `market_snapshot.py`: daily market snapshot with major indices, ETFs, and top movers.

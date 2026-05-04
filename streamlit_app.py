@@ -40,6 +40,7 @@ from portfolio_core import (
     read_gbm_holdings,
 )
 from transaction_parser import parse_portfolio_transactions, parsed_positions_to_holdings
+from transaction_returns_engine import build_transaction_analytics
 from returns_engine import (
     build_performance_attribution,
     build_returns_diagnostics,
@@ -372,19 +373,43 @@ selected_dataset = portfolio_datasets[selected_portfolio]
 holdings = selected_dataset["holdings"]
 parsed_ledger = selected_dataset["parsed"]
 source_type = selected_dataset["source_type"]
-portfolio_value_series = compute_portfolio_value_series(
-    holdings=holdings,
-    converted_prices=converted_prices,
-    base_currency=base_currency,
-    fx_series=filtered_fx,
-)
-portfolio_returns = compute_daily_returns(portfolio_value_series)
-portfolio_drawdown = drawdown_series(portfolio_value_series)
 snapshot_metrics = compute_snapshot_cost_metrics(holdings, base_currency=base_currency, fx_spot=fx_spot)
-reconstructed_metrics = compute_reconstructed_return_metrics(portfolio_value_series)
-synthetic_mwr = build_synthetic_money_weighted_return(holdings, portfolio_value_series, base_currency=base_currency, fx_spot=fx_spot)
 attribution = build_performance_attribution(holdings, base_currency=base_currency, fx_spot=fx_spot)
 attribution["weight"] = attribution["market_value"] / attribution["market_value"].sum() if attribution["market_value"].sum() else 0.0
+transaction_analytics = None
+performance_series = pd.Series(dtype=float)
+
+if parsed_ledger is not None:
+    transaction_analytics = build_transaction_analytics(
+        parsed=parsed_ledger,
+        converted_prices=converted_prices,
+        base_currency=base_currency,
+        fx_series=filtered_fx,
+    )
+    portfolio_value_series = transaction_analytics.nav_series
+    portfolio_returns = transaction_analytics.twr_returns
+    performance_series = transaction_analytics.twr_index
+    portfolio_drawdown = drawdown_series(performance_series)
+    reconstructed_metrics = {
+        "daily_return_mean": portfolio_returns.mean() if not portfolio_returns.empty else np.nan,
+        "cumulative_return": transaction_analytics.metrics["twr_cumulative_return"],
+        "cagr": transaction_analytics.metrics["twr_cagr"],
+        "start_date": transaction_analytics.metrics["start_date"],
+        "end_date": transaction_analytics.metrics["end_date"],
+    }
+    synthetic_mwr = transaction_analytics.metrics["mwr_xirr"]
+else:
+    portfolio_value_series = compute_portfolio_value_series(
+        holdings=holdings,
+        converted_prices=converted_prices,
+        base_currency=base_currency,
+        fx_series=filtered_fx,
+    )
+    portfolio_returns = compute_daily_returns(portfolio_value_series)
+    performance_series = portfolio_value_series
+    portfolio_drawdown = drawdown_series(performance_series)
+    reconstructed_metrics = compute_reconstructed_return_metrics(portfolio_value_series)
+    synthetic_mwr = build_synthetic_money_weighted_return(holdings, portfolio_value_series, base_currency=base_currency, fx_spot=fx_spot)
 
 benchmark_prices = converted_prices.rename(columns={ticker: label for label, ticker in benchmark_selection.comparison_map.items()})
 benchmark_series_map = {
@@ -395,14 +420,14 @@ benchmark_series_map = {
 primary_benchmark_values = benchmark_series_map.get(benchmark_selection.primary_label, pd.Series(dtype=float))
 primary_benchmark_returns = compute_daily_returns(primary_benchmark_values) if not primary_benchmark_values.empty else pd.Series(dtype=float)
 risk_report = build_risk_report(
-    values=portfolio_value_series,
+    values=performance_series,
     portfolio_returns=portfolio_returns,
     benchmark_returns=primary_benchmark_returns,
     risk_free_rate=risk_free_rate_pct / 100.0,
 )
 
 comparison_series_map = dict(benchmark_series_map)
-comparison_series_map[selected_portfolio] = portfolio_value_series
+comparison_series_map[selected_portfolio] = performance_series
 normalized_comparison = normalize_to_growth_of_one(pd.DataFrame(comparison_series_map).sort_index()).dropna(how="all")
 chart_comparison = slice_by_timeframe(normalized_comparison, timeframe)
 
@@ -443,9 +468,12 @@ with kpi_cols[0]:
 with kpi_cols[1]:
     render_kpi_card("Daily P&L", format_currency(daily_pnl), format_pct(daily_return), tone_from_value(daily_pnl))
 with kpi_cols[2]:
-    render_kpi_card("Absolute Return", format_pct(absolute_return), "vs broker cost basis", tone_from_value(absolute_return))
+    render_kpi_card("Absolute Return", format_pct(absolute_return), "vs open-position cost basis", tone_from_value(absolute_return))
 with kpi_cols[3]:
-    render_kpi_card("Holdings CAGR", format_pct(holdings_cagr), "reconstructed holdings path", tone_from_value(holdings_cagr))
+    ledger_complete = bool(transaction_analytics is not None and transaction_analytics.metrics.get("ledger_history_complete"))
+    label = "True TWR CAGR" if transaction_analytics is not None and ledger_complete else "Partial TWR CAGR" if transaction_analytics is not None else "Holdings CAGR"
+    subtitle = "external flows adjusted" if transaction_analytics is not None else "reconstructed holdings path"
+    render_kpi_card(label, format_pct(holdings_cagr), subtitle, tone_from_value(holdings_cagr))
 with kpi_cols[4]:
     render_kpi_card("Alpha vs Primary", format_pct(risk_report.get("alpha", np.nan)), benchmark_selection.primary_label, tone_from_value(risk_report.get("alpha", np.nan)))
 with kpi_cols[5]:
@@ -453,8 +481,14 @@ with kpi_cols[5]:
 
 if nav_section == "Dashboard":
     render_method_note(
-        "This command center separates broker snapshot metrics from reconstructed historical analytics. When a transaction CSV is uploaded, positions are derived from FIFO open lots and broker prices in MXN. Holdings CAGR, drawdown and benchmark overlays still reconstruct the path of current open positions through adjusted market prices."
+        "This command center separates broker snapshot metrics from historical analytics. With a transaction CSV, Aurelia reconstructs daily NAV from dated trades, uses only external cash flows for TWR and XIRR, and keeps open-position cost metrics separate from account-level performance."
     )
+    if transaction_analytics is not None:
+        render_method_note(
+            f"Transaction mode: net external capital {format_currency(transaction_analytics.metrics['net_external_capital'])} {base_currency}, "
+            f"realized P&L {format_currency(transaction_analytics.metrics['realized_pnl'])}, "
+            f"unrealized P&L {format_currency(transaction_analytics.metrics['unrealized_pnl'])}."
+        )
 
     left, right = st.columns([2.0, 1.1])
     with left:
@@ -501,7 +535,11 @@ elif nav_section == "Portfolio Analytics":
                     "absolute_return": snapshot_metrics["snapshot_absolute_return"],
                     "reconstructed_cumulative_return": reconstructed_metrics["cumulative_return"],
                     "cagr": reconstructed_metrics["cagr"],
-                    "synthetic_xirr": synthetic_mwr,
+                    "xirr": synthetic_mwr,
+                    "ledger_history_complete": transaction_analytics.metrics["ledger_history_complete"] if transaction_analytics is not None else np.nan,
+                    "net_external_capital": transaction_analytics.metrics["net_external_capital"] if transaction_analytics is not None else np.nan,
+                    "realized_pnl": transaction_analytics.metrics["realized_pnl"] if transaction_analytics is not None else np.nan,
+                    "unrealized_pnl": transaction_analytics.metrics["unrealized_pnl"] if transaction_analytics is not None else snapshot_metrics["snapshot_unrealized_pnl"],
                 }
             ]
         ).set_index("portfolio")
@@ -521,8 +559,12 @@ elif nav_section == "Portfolio Analytics":
                 f"Transaction parser diagnostics: {parsed_ledger.diagnostics['trade_count']} trades, "
                 f"{parsed_ledger.diagnostics['cash_flow_count']} cash rows, "
                 f"{parsed_ledger.diagnostics['open_lot_count']} open lots, "
+                f"{parsed_ledger.diagnostics['closed_lot_count']} closed lots, "
                 f"{parsed_ledger.diagnostics['quote_only_row_count']} quote-only rows."
             )
+        if transaction_analytics is not None:
+            for warning in transaction_analytics.warnings:
+                render_method_note(warning)
         methodology_table = pd.DataFrame(
             [{"Metric": key, "Formula / Interpretation": value} for key, value in diagnostics.methodology.items()]
         )
@@ -588,7 +630,7 @@ elif nav_section == "Holdings":
         st.dataframe(format_display_table(sector_proxy.set_index("sector_proxy")), use_container_width=True)
     if parsed_ledger is not None:
         st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
-        ledger_tab, cash_tab, lots_tab = st.tabs(["Trades", "Cash Flows", "Open Lots"])
+        ledger_tab, cash_tab, lots_tab, realized_tab = st.tabs(["Trades", "Cash Flows", "Open Lots", "Realized Lots"])
         with ledger_tab:
             trades_display = parsed_ledger.trades[
                 [
@@ -619,6 +661,9 @@ elif nav_section == "Holdings":
         with lots_tab:
             lots_display = parsed_ledger.open_lots.copy()
             st.dataframe(format_display_table(lots_display), use_container_width=True, hide_index=True)
+        with realized_tab:
+            realized_display = parsed_ledger.closed_lots.copy()
+            st.dataframe(format_display_table(realized_display), use_container_width=True, hide_index=True)
 
 elif nav_section == "Market Snapshot":
     left, right = st.columns([1.25, 1])
@@ -654,6 +699,7 @@ else:
                         "portfolio": selected_portfolio,
                         "absolute_return": absolute_return,
                         "cagr": holdings_cagr,
+                        "xirr": synthetic_mwr,
                         "alpha": risk_report.get("alpha"),
                         "beta": risk_report.get("beta"),
                     }
@@ -668,7 +714,7 @@ else:
                         "metrics": pd.Series({**snapshot_metrics, **reconstructed_metrics, **risk_report}),
                         "comparison": comparison_table,
                         "allocation": attribution,
-                        "value_series": portfolio_value_series,
+                        "value_series": performance_series,
                         "return_series": portfolio_returns,
                     },
                 )()
