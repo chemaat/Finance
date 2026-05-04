@@ -9,6 +9,7 @@ This workspace now has two entry points:
 - `benchmark_engine.py`: benchmark selection, date alignment, and period-return comparison tables.
 - `risk_engine.py`: institutional risk metrics such as beta, alpha, Sortino, VaR, CVaR, tracking error, and rolling measures.
 - `market_snapshot.py`: daily market snapshot with major indices, ETFs, and top movers.
+- `transaction_parser.py`: robust transaction-ledger parser for CSV portfolio exports with trade normalization, cash-flow classification, FIFO open lots, and position reconstruction.
 - `theme_engine.py`: design tokens, dark/light theming, shell styling, and premium visual system.
 - `ui_components.py`: reusable UI primitives for KPI cards, shell top bar, data grid helpers, and chart theming.
 - `portfolio_analysis.py`: CLI wrapper for batch CSV and Excel exports.
