@@ -78,6 +78,80 @@ class ParsedPortfolioLedger:
     diagnostics: dict[str, object]
 
 
+def parsed_positions_to_holdings(parsed: ParsedPortfolioLedger) -> pd.DataFrame:
+    if parsed.positions.empty:
+        return pd.DataFrame(
+            columns=[
+                "ticker",
+                "original_ticker",
+                "asset_name",
+                "section",
+                "quantity",
+                "average_cost",
+                "market_price",
+                "market_value",
+                "profit_loss",
+                "currency",
+                "is_market_asset",
+                "has_price_history",
+                "source_file",
+                "portfolio_name",
+            ]
+        )
+
+    portfolio_name = parsed.ledger["portfolio_name"].iat[0]
+    source_file = parsed.ledger["source_file"].iat[0]
+    lot_counts = parsed.open_lots.groupby("symbol").size().rename("open_lot_count")
+    holdings = (
+        parsed.positions.rename(
+            columns={
+                "symbol": "ticker",
+                "quantity_open": "quantity",
+                "avg_cost_mxn": "average_cost",
+                "current_price_mxn": "market_price",
+                "market_value_mxn": "market_value",
+                "unrealized_pnl_mxn": "profit_loss",
+            }
+        )
+        .merge(lot_counts, left_on="ticker", right_index=True, how="left")
+        .copy()
+    )
+    holdings["original_ticker"] = holdings["ticker"]
+    holdings["asset_name"] = holdings["ticker"]
+    holdings["section"] = np.where(
+        holdings["ticker"].eq("MXN=X"),
+        "FX Exposure",
+        "Transaction Ledger",
+    )
+    holdings["currency"] = "MXN"
+    holdings["is_market_asset"] = True
+    holdings["has_price_history"] = holdings["market_price"].notna()
+    holdings["source_file"] = source_file
+    holdings["portfolio_name"] = portfolio_name
+    return holdings[
+        [
+            "ticker",
+            "original_ticker",
+            "asset_name",
+            "section",
+            "quantity",
+            "average_cost",
+            "market_price",
+            "market_value",
+            "profit_loss",
+            "currency",
+            "is_market_asset",
+            "has_price_history",
+            "source_file",
+            "portfolio_name",
+            "open_lot_count",
+            "cost_basis_mxn",
+            "unrealized_return",
+            "last_quote_timestamp",
+        ]
+    ].sort_values("market_value", ascending=False).reset_index(drop=True)
+
+
 def _read_text(source: Path | BytesIO | str) -> tuple[str, str]:
     if isinstance(source, Path):
         return source.read_text(encoding="utf-8"), source.name

@@ -39,6 +39,7 @@ from portfolio_core import (
     normalize_to_growth_of_one,
     read_gbm_holdings,
 )
+from transaction_parser import parse_portfolio_transactions, parsed_positions_to_holdings
 from returns_engine import (
     build_performance_attribution,
     build_returns_diagnostics,
@@ -70,16 +71,27 @@ def to_csv_bytes(frame: pd.DataFrame) -> bytes:
 
 
 @st.cache_data(show_spinner=False)
-def load_uploaded_portfolios_cached(files: tuple[tuple[str, bytes], ...]) -> dict[str, pd.DataFrame]:
-    portfolios: dict[str, pd.DataFrame] = {}
+def load_portfolio_datasets_cached(files: tuple[tuple[str, bytes], ...]) -> dict[str, dict[str, object]]:
+    portfolios: dict[str, dict[str, object]] = {}
     for file_name, content in files:
-        portfolios[Path(file_name).stem] = read_gbm_holdings(BytesIO(content), source_name=file_name)
+        stem = Path(file_name).stem
+        suffix = Path(file_name).suffix.lower()
+        if suffix == ".csv":
+            parsed = parse_portfolio_transactions(BytesIO(content), source_name=file_name)
+            holdings = parsed_positions_to_holdings(parsed)
+            portfolios[stem] = {
+                "holdings": holdings,
+                "source_type": "transaction_csv",
+                "parsed": parsed,
+            }
+        else:
+            holdings = read_gbm_holdings(BytesIO(content), source_name=file_name)
+            portfolios[stem] = {
+                "holdings": holdings,
+                "source_type": "gbm_snapshot_excel",
+                "parsed": None,
+            }
     return portfolios
-
-
-@st.cache_data(show_spinner=False)
-def load_local_portfolios_cached(file_paths: tuple[str, ...]) -> dict[str, pd.DataFrame]:
-    return {Path(path).stem: read_gbm_holdings(Path(path)) for path in file_paths}
 
 
 @st.cache_data(show_spinner=True, ttl=60 * 60 * 4)
@@ -88,7 +100,8 @@ def load_market_bundle_cached(
     benchmark_map: tuple[tuple[str, str], ...],
     start_date: str,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    portfolios = load_uploaded_portfolios_cached(portfolio_cache_key)
+    datasets = load_portfolio_datasets_cached(portfolio_cache_key)
+    portfolios = {name: data["holdings"] for name, data in datasets.items()}
     return fetch_market_bundle(
         portfolio_frames=portfolios,
         benchmark_map=dict(benchmark_map),
@@ -225,6 +238,8 @@ theme_mode = st.session_state.get("theme_mode", "Dark")
 theme = inject_global_styles(theme_mode)
 
 candidate_files = available_portfolio_files()
+csv_candidates = sorted((Path.home() / "Downloads").glob("portfolio*.csv"))
+candidate_files = list(dict.fromkeys(candidate_files + csv_candidates))
 default_paths = tuple(str(path) for path in candidate_files[: min(5, len(candidate_files))])
 
 with st.sidebar:
@@ -248,7 +263,7 @@ with st.sidebar:
     )
 
     st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
-    uploaded_files = st.file_uploader("Upload GBM Excel files", type=["xlsx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload portfolio files", type=["xlsx", "csv"], accept_multiple_files=True)
     selected_files: list[str] = []
     if candidate_files:
         selected_files = st.multiselect(
@@ -266,10 +281,10 @@ with st.sidebar:
 
 if uploaded_files:
     portfolio_cache_key = tuple((file.name, file.getvalue()) for file in uploaded_files)
-    portfolio_frames = load_uploaded_portfolios_cached(portfolio_cache_key)
+    portfolio_datasets = load_portfolio_datasets_cached(portfolio_cache_key)
 elif selected_files:
     portfolio_cache_key = tuple((path, Path(path).read_bytes()) for path in selected_files)
-    portfolio_frames = load_local_portfolios_cached(tuple(selected_files))
+    portfolio_datasets = load_portfolio_datasets_cached(portfolio_cache_key)
 else:
     render_shell_topbar("Unavailable", "Unavailable", "No portfolio loaded")
     st.markdown(
@@ -283,7 +298,7 @@ else:
     )
     st.stop()
 
-portfolio_names = list(portfolio_frames.keys())
+portfolio_names = list(portfolio_datasets.keys())
 default_portfolio = portfolio_names[0]
 
 top_left, top_mid, top_right, top_search = st.columns([2.3, 1.1, 1.2, 1.4])
@@ -353,7 +368,10 @@ filtered_fx = fx_series.loc[(fx_series.index >= start_date) & (fx_series.index <
 converted_prices = convert_price_frame(filtered_prices, base_currency=base_currency, fx_series=filtered_fx).sort_index().ffill()
 fx_spot = float(filtered_fx.dropna().iloc[-1]) if not filtered_fx.empty and not filtered_fx.dropna().empty else None
 
-holdings = portfolio_frames[selected_portfolio]
+selected_dataset = portfolio_datasets[selected_portfolio]
+holdings = selected_dataset["holdings"]
+parsed_ledger = selected_dataset["parsed"]
+source_type = selected_dataset["source_type"]
 portfolio_value_series = compute_portfolio_value_series(
     holdings=holdings,
     converted_prices=converted_prices,
@@ -402,7 +420,8 @@ if not primary_benchmark_returns.empty:
     rolling_beta_frame = rolling_beta(portfolio_returns, primary_benchmark_returns).rename(selected_portfolio).to_frame()
     rolling_beta_frame = slice_by_timeframe(rolling_beta_frame, timeframe)
 
-diagnostics = build_returns_diagnostics(has_real_cash_flows=False)
+has_real_cash_flows = bool(parsed_ledger is not None and not parsed_ledger.cash_flows.empty)
+diagnostics = build_returns_diagnostics(has_real_cash_flows=has_real_cash_flows)
 snapshot = load_market_snapshot_cached(end_date.date().isoformat())
 last_updated_candidates = [portfolio_value_series.index.max()]
 if snapshot["last_updated"] is not None:
@@ -410,6 +429,8 @@ if snapshot["last_updated"] is not None:
 last_updated = max(last_updated_candidates)
 last_updated_label = last_updated.strftime("%Y-%m-%d %H:%M America/Monterrey")
 render_shell_topbar(last_updated_label, benchmark_selection.primary_label, selected_portfolio)
+
+st.caption(f"Source: `{source_type}`")
 
 daily_pnl = portfolio_value_series.diff().iloc[-1] if len(portfolio_value_series) > 1 else np.nan
 daily_return = portfolio_returns.iloc[-1] if not portfolio_returns.empty else np.nan
@@ -432,7 +453,7 @@ with kpi_cols[5]:
 
 if nav_section == "Dashboard":
     render_method_note(
-        "This command center separates broker snapshot metrics from reconstructed historical analytics. Absolute return uses GBM cost basis today. Holdings CAGR, drawdown and benchmark overlays reconstruct the path of the current holdings through adjusted market prices."
+        "This command center separates broker snapshot metrics from reconstructed historical analytics. When a transaction CSV is uploaded, positions are derived from FIFO open lots and broker prices in MXN. Holdings CAGR, drawdown and benchmark overlays still reconstruct the path of current open positions through adjusted market prices."
     )
 
     left, right = st.columns([2.0, 1.1])
@@ -473,6 +494,7 @@ elif nav_section == "Portfolio Analytics":
             [
                 {
                     "portfolio": selected_portfolio,
+                    "source_type": source_type,
                     "snapshot_total_value": snapshot_metrics["snapshot_total_value"],
                     "snapshot_total_cost_basis": snapshot_metrics["snapshot_total_cost_basis"],
                     "snapshot_unrealized_pnl": snapshot_metrics["snapshot_unrealized_pnl"],
@@ -494,6 +516,13 @@ elif nav_section == "Portfolio Analytics":
     with tabs[2]:
         for warning in diagnostics.warnings:
             render_method_note(warning)
+        if parsed_ledger is not None:
+            render_method_note(
+                f"Transaction parser diagnostics: {parsed_ledger.diagnostics['trade_count']} trades, "
+                f"{parsed_ledger.diagnostics['cash_flow_count']} cash rows, "
+                f"{parsed_ledger.diagnostics['open_lot_count']} open lots, "
+                f"{parsed_ledger.diagnostics['quote_only_row_count']} quote-only rows."
+            )
         methodology_table = pd.DataFrame(
             [{"Metric": key, "Formula / Interpretation": value} for key, value in diagnostics.methodology.items()]
         )
@@ -557,6 +586,39 @@ elif nav_section == "Holdings":
     with right:
         sector_proxy = build_sector_proxy(filtered_holdings if not filtered_holdings.empty else attribution)
         st.dataframe(format_display_table(sector_proxy.set_index("sector_proxy")), use_container_width=True)
+    if parsed_ledger is not None:
+        st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
+        ledger_tab, cash_tab, lots_tab = st.tabs(["Trades", "Cash Flows", "Open Lots"])
+        with ledger_tab:
+            trades_display = parsed_ledger.trades[
+                [
+                    "symbol",
+                    "trade_date",
+                    "transaction_type",
+                    "quantity",
+                    "trade_price_mxn",
+                    "commission_mxn",
+                    "net_cash_impact_mxn",
+                ]
+            ].copy()
+            st.dataframe(format_display_table(trades_display), use_container_width=True, hide_index=True)
+        with cash_tab:
+            cash_display = parsed_ledger.cash_flows[
+                [
+                    "trade_date",
+                    "transaction_type",
+                    "cash_amount_mxn",
+                    "cash_flow_scope",
+                    "cash_flow_category",
+                    "classification_reason",
+                    "classification_confidence",
+                    "comment",
+                ]
+            ].copy()
+            st.dataframe(format_display_table(cash_display), use_container_width=True, hide_index=True)
+        with lots_tab:
+            lots_display = parsed_ledger.open_lots.copy()
+            st.dataframe(format_display_table(lots_display), use_container_width=True, hide_index=True)
 
 elif nav_section == "Market Snapshot":
     left, right = st.columns([1.25, 1])

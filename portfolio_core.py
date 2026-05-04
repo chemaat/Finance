@@ -141,6 +141,8 @@ def normalize_gbm_ticker(raw_ticker: object, section: str) -> str:
 
 
 def infer_ticker_currency(ticker: str) -> str:
+    if ticker == FX_TICKER:
+        return MXN_CURRENCY
     if ticker.endswith(".MX") or ticker == "^MXX" or ticker.startswith("BI"):
         return MXN_CURRENCY
     return USD_CURRENCY

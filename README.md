@@ -2,6 +2,11 @@
 
 Institutional-style portfolio intelligence for GBM holdings with premium Streamlit UX, configurable benchmarking, advanced risk analytics, and a market snapshot layer.
 
+The app now supports two ingestion modes:
+
+- GBM holdings snapshot exports (`.xlsx`)
+- Transaction-ledger portfolio exports (`.csv`) with trade dates, purchase prices, cash flows, and FIFO-derived open positions
+
 This workspace now has two entry points:
 
 - `portfolio_core.py`: reusable analytics module for loading GBM exports, normalizing holdings, downloading market and FX data, computing metrics, and exporting Excel.
