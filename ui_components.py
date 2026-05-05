@@ -8,6 +8,7 @@ import math
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from theme_engine import PRODUCT_NAME, PRODUCT_TAGLINE
 
@@ -83,15 +84,76 @@ def render_market_tape(frame: pd.DataFrame, theme: dict[str, str]) -> None:
             </div>
             """
         )
-    st.markdown(
+    components.html(
         f"""
+        <style>
+          body {{
+            margin: 0;
+            background: transparent;
+            color: {theme["text"]};
+            font-family: "Inter", "SF Pro Display", "IBM Plex Sans", system-ui, sans-serif;
+          }}
+          .market-tape {{
+            background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.018));
+            border: 1px solid {theme["border"]};
+            box-shadow: {theme["shadow"]};
+            border-radius: 18px;
+            padding: 0.9rem 1rem;
+            overflow-x: auto;
+            white-space: nowrap;
+            box-sizing: border-box;
+          }}
+          .market-tape-track {{
+            display: flex;
+            gap: 0.8rem;
+            min-width: max-content;
+          }}
+          .tape-card {{
+            min-width: 184px;
+            border: 1px solid {theme["border"]};
+            border-radius: 16px;
+            padding: 0.8rem 0.85rem;
+            background: rgba(255,255,255,0.035);
+            box-sizing: border-box;
+          }}
+          .tape-label {{
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: {theme["accent"]};
+            margin-bottom: 0.3rem;
+          }}
+          .tape-price {{
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: {theme["text"]};
+            line-height: 1.1;
+          }}
+          .tape-change {{
+            font-size: 0.82rem;
+            margin-top: 0.2rem;
+          }}
+          .value-up {{
+            color: {theme["success"]};
+          }}
+          .value-down {{
+            color: {theme["danger"]};
+          }}
+          .value-flat {{
+            color: {theme["text"]};
+          }}
+          .tape-sparkline {{
+            width: 100%;
+            height: 36px;
+            margin-top: 0.45rem;
+          }}
+        </style>
         <div class="market-tape">
           <div class="market-tape-track">
             {''.join(cards)}
           </div>
         </div>
         """,
-        unsafe_allow_html=True,
+        height=126,
     )
 
 
