@@ -2,7 +2,13 @@
   "portfolios": [
     {
       "name": "MAIN GBM",
-      "path": "data/portfolios/main_gbm.csv"
+      "path": "data/portfolios/main_gbm.csv",
+      "sha256": "6390e78f0eb1bbcc28d79b3d737d068f0d8aec46d40f2628396ccbcf5476fec6",
+      "file_size_bytes": 4883,
+      "synced_at": "2026-05-05T19:35:21.397252+00:00",
+      "source_modified_at": "2026-05-04T21:42:51.638827+00:00",
+      "source_file_name": "portfolio (3).csv",
+      "last_sync_changed": true
     },
     {
       "name": "LT KIA",

@@ -131,6 +131,15 @@ def format_currency(value: float) -> str:
     return "N/A" if pd.isna(value) else f"{value:,.2f}"
 
 
+def format_timestamp_label(value: str | None) -> str:
+    if not value:
+        return "N/A"
+    stamp = pd.Timestamp(value)
+    if pd.isna(stamp):
+        return "N/A"
+    return stamp.tz_convert("America/Monterrey").strftime("%Y-%m-%d %H:%M %Z") if stamp.tzinfo else stamp.strftime("%Y-%m-%d %H:%M")
+
+
 def slice_by_timeframe(frame: pd.DataFrame | pd.Series, timeframe: str) -> pd.DataFrame | pd.Series:
     if frame is None or len(frame) == 0:
         return frame
@@ -246,10 +255,11 @@ candidate_files = available_portfolio_files()
 csv_candidates = sorted((Path.home() / "Downloads").glob("portfolio*.csv"))
 registered_sources = load_portfolio_registry()
 registry_map = {str(source.file_path): source.display_name for source in registered_sources}
-candidate_files = list(dict.fromkeys(candidate_files + csv_candidates + [source.file_path for source in registered_sources]))
+registered_existing_sources = [source for source in registered_sources if source.exists]
+candidate_files = list(dict.fromkeys(candidate_files + csv_candidates + [source.file_path for source in registered_existing_sources]))
 default_paths = tuple(str(path) for path in candidate_files[: min(5, len(candidate_files))])
-if registered_sources:
-    default_paths = tuple(str(source.file_path) for source in registered_sources)
+if registered_existing_sources:
+    default_paths = tuple(str(source.file_path) for source in registered_existing_sources)
 
 with st.sidebar:
     st.markdown("### Aurelia")
@@ -276,7 +286,14 @@ with st.sidebar:
     selected_files: list[str] = []
     if registered_sources:
         st.caption("System portfolios")
-        st.markdown("\n".join([f"- `{source.display_name}`" for source in registered_sources]))
+        st.markdown(
+            "\n".join(
+                [
+                    f"- `{source.display_name}` {'`READY`' if source.exists else '`MISSING`'}"
+                    for source in registered_sources
+                ]
+            )
+        )
     if candidate_files:
         selected_files = st.multiselect(
             "Local portfolio files",
@@ -391,6 +408,7 @@ selected_dataset = portfolio_datasets[selected_portfolio]
 holdings = selected_dataset["holdings"]
 parsed_ledger = selected_dataset["parsed"]
 source_type = selected_dataset["source_type"]
+selected_registry_source = next((source for source in registered_sources if source.display_name == selected_portfolio), None)
 snapshot_metrics = compute_snapshot_cost_metrics(holdings, base_currency=base_currency, fx_spot=fx_spot)
 attribution = build_performance_attribution(holdings, base_currency=base_currency, fx_spot=fx_spot)
 attribution["weight"] = attribution["market_value"] / attribution["market_value"].sum() if attribution["market_value"].sum() else 0.0
@@ -475,6 +493,17 @@ render_shell_topbar(last_updated_label, benchmark_selection.primary_label, selec
 render_market_tape(snapshot.get("market_tape", pd.DataFrame()), theme)
 
 st.caption(f"Source: `{source_type}`")
+if selected_registry_source is not None and selected_registry_source.exists:
+    st.caption(
+        " | ".join(
+            [
+                f"Registry file: `{selected_registry_source.file_path.name}`",
+                f"Synced: `{format_timestamp_label(selected_registry_source.synced_at)}`",
+                f"Source modified: `{format_timestamp_label(selected_registry_source.source_modified_at)}`",
+                f"SHA256: `{(selected_registry_source.sha256 or '')[:12]}`",
+            ]
+        )
+    )
 
 daily_pnl = portfolio_value_series.diff().iloc[-1] if len(portfolio_value_series) > 1 else np.nan
 daily_return = portfolio_returns.iloc[-1] if not portfolio_returns.empty else np.nan
@@ -711,6 +740,11 @@ else:
         st.markdown(f"- Risk-free rate: `{risk_free_rate_pct:.2f}%`")
         st.markdown(f"- Last updated: `{last_updated_label}`")
         st.markdown("- Recommended ingestion: `data/portfolios/*.csv` + `data/portfolio_registry.json` in GitHub")
+        if selected_registry_source is not None:
+            st.markdown(f"- Registry portfolio: `{selected_registry_source.display_name}`")
+            st.markdown(f"- Registry path: `{selected_registry_source.file_path.name}`")
+            st.markdown(f"- Registry SHA256: `{selected_registry_source.sha256 or 'N/A'}`")
+            st.markdown(f"- Last sync: `{format_timestamp_label(selected_registry_source.synced_at)}`")
     with right:
         export_payload = {
             "summary": pd.DataFrame(

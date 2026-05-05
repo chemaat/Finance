@@ -13,6 +13,7 @@ Recommended production workflow:
 - Register them in `data/portfolio_registry.json`
 - Let GitHub be the source of truth
 - Streamlit Cloud will update only when the repository file changes and a new deploy is triggered
+- Use `sync_portfolio_source.py` so the repo only updates when the source file hash actually changes
 
 This workspace now has two entry points:
 
@@ -84,6 +85,44 @@ Suggested setup for your two portfolios:
 ```
 
 With that setup, the app can auto-load those portfolios directly from the repo without needing a manual upload every time.
+
+## Sync Command
+
+To update a system portfolio from a new local file:
+
+```bash
+PYTHONPATH=/Users/chemaar/Documents/Codex/2026-04-24-files-mentioned-by-the-user-app/.pythonlibs \
+/Users/chemaar/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+/Users/chemaar/Documents/Codex/2026-04-24-files-mentioned-by-the-user-app/sync_portfolio_source.py \
+--name "MAIN GBM" \
+--source "/Users/chemaar/Downloads/portfolio (3).csv" \
+--target "main_gbm.csv"
+```
+
+And for the second portfolio:
+
+```bash
+PYTHONPATH=/Users/chemaar/Documents/Codex/2026-04-24-files-mentioned-by-the-user-app/.pythonlibs \
+/Users/chemaar/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+/Users/chemaar/Documents/Codex/2026-04-24-files-mentioned-by-the-user-app/sync_portfolio_source.py \
+--name "LT KIA" \
+--source "/absolute/path/to/lt_kia.csv" \
+--target "lt_kia.csv"
+```
+
+The script:
+
+- copies the file into `data/portfolios/`
+- computes `SHA256`
+- updates `data/portfolio_registry.json`
+- skips content churn when the file is unchanged
+
+The dashboard then shows:
+
+- source file name
+- sync timestamp
+- original file modification time
+- SHA fingerprint
 
 ## Streamlit Dashboard
 
