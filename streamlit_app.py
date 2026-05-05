@@ -39,6 +39,7 @@ from portfolio_core import (
     normalize_to_growth_of_one,
     read_gbm_holdings,
 )
+from portfolio_registry import load_portfolio_registry
 from transaction_parser import parse_portfolio_transactions, parsed_positions_to_holdings
 from transaction_returns_engine import build_transaction_analytics
 from returns_engine import (
@@ -59,6 +60,7 @@ from ui_components import (
     paginate_dataframe,
     render_kpi_card,
     render_method_note,
+    render_market_tape,
     render_shell_topbar,
     tone_from_value,
 )
@@ -72,22 +74,24 @@ def to_csv_bytes(frame: pd.DataFrame) -> bytes:
 
 
 @st.cache_data(show_spinner=False)
-def load_portfolio_datasets_cached(files: tuple[tuple[str, bytes], ...]) -> dict[str, dict[str, object]]:
+def load_portfolio_datasets_cached(files: tuple[tuple[str, str, bytes], ...]) -> dict[str, dict[str, object]]:
     portfolios: dict[str, dict[str, object]] = {}
-    for file_name, content in files:
-        stem = Path(file_name).stem
+    for display_name, file_name, content in files:
         suffix = Path(file_name).suffix.lower()
         if suffix == ".csv":
             parsed = parse_portfolio_transactions(BytesIO(content), source_name=file_name)
             holdings = parsed_positions_to_holdings(parsed)
-            portfolios[stem] = {
+            parsed.ledger["portfolio_name"] = display_name
+            holdings["portfolio_name"] = display_name
+            portfolios[display_name] = {
                 "holdings": holdings,
                 "source_type": "transaction_csv",
                 "parsed": parsed,
             }
         else:
             holdings = read_gbm_holdings(BytesIO(content), source_name=file_name)
-            portfolios[stem] = {
+            holdings["portfolio_name"] = display_name
+            portfolios[display_name] = {
                 "holdings": holdings,
                 "source_type": "gbm_snapshot_excel",
                 "parsed": None,
@@ -221,7 +225,7 @@ def build_correlation_heatmap(frame: pd.DataFrame, theme: dict[str, str]) -> go.
 def build_snapshot_table(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return frame
-    display = frame.copy()
+    display = frame.drop(columns=["sparkline"], errors="ignore").copy()
     display["last"] = display["last"].map(lambda x: f"{x:,.2f}")
     display["change_points"] = display["change_points"].map(lambda x: f"{x:,.2f}")
     display["change_pct"] = display["change_pct"].map(lambda x: f"{x:.2%}")
@@ -240,8 +244,12 @@ theme = inject_global_styles(theme_mode)
 
 candidate_files = available_portfolio_files()
 csv_candidates = sorted((Path.home() / "Downloads").glob("portfolio*.csv"))
-candidate_files = list(dict.fromkeys(candidate_files + csv_candidates))
+registered_sources = load_portfolio_registry()
+registry_map = {str(source.file_path): source.display_name for source in registered_sources}
+candidate_files = list(dict.fromkeys(candidate_files + csv_candidates + [source.file_path for source in registered_sources]))
 default_paths = tuple(str(path) for path in candidate_files[: min(5, len(candidate_files))])
+if registered_sources:
+    default_paths = tuple(str(source.file_path) for source in registered_sources)
 
 with st.sidebar:
     st.markdown("### Aurelia")
@@ -266,12 +274,15 @@ with st.sidebar:
     st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
     uploaded_files = st.file_uploader("Upload portfolio files", type=["xlsx", "csv"], accept_multiple_files=True)
     selected_files: list[str] = []
+    if registered_sources:
+        st.caption("System portfolios")
+        st.markdown("\n".join([f"- `{source.display_name}`" for source in registered_sources]))
     if candidate_files:
         selected_files = st.multiselect(
             "Local portfolio files",
             options=[str(path) for path in candidate_files],
             default=list(default_paths),
-            format_func=lambda value: Path(value).name,
+            format_func=lambda value: registry_map.get(value, Path(value).name),
         )
 
     st.markdown('<div class="app-divider"></div>', unsafe_allow_html=True)
@@ -281,10 +292,17 @@ with st.sidebar:
     lookback_years = st.selectbox("Max history", options=[1, 2, 3, 5], index=3)
 
 if uploaded_files:
-    portfolio_cache_key = tuple((file.name, file.getvalue()) for file in uploaded_files)
+    portfolio_cache_key = tuple((Path(file.name).stem, file.name, file.getvalue()) for file in uploaded_files)
     portfolio_datasets = load_portfolio_datasets_cached(portfolio_cache_key)
 elif selected_files:
-    portfolio_cache_key = tuple((path, Path(path).read_bytes()) for path in selected_files)
+    portfolio_cache_key = tuple(
+        (
+            registry_map.get(path, Path(path).stem),
+            path,
+            Path(path).read_bytes(),
+        )
+        for path in selected_files
+    )
     portfolio_datasets = load_portfolio_datasets_cached(portfolio_cache_key)
 else:
     render_shell_topbar("Unavailable", "Unavailable", "No portfolio loaded")
@@ -454,6 +472,7 @@ if snapshot["last_updated"] is not None:
 last_updated = max(last_updated_candidates)
 last_updated_label = last_updated.strftime("%Y-%m-%d %H:%M America/Monterrey")
 render_shell_topbar(last_updated_label, benchmark_selection.primary_label, selected_portfolio)
+render_market_tape(snapshot.get("market_tape", pd.DataFrame()), theme)
 
 st.caption(f"Source: `{source_type}`")
 
@@ -691,6 +710,7 @@ else:
         st.markdown(f"- Primary benchmark: `{benchmark_selection.primary_label}`")
         st.markdown(f"- Risk-free rate: `{risk_free_rate_pct:.2f}%`")
         st.markdown(f"- Last updated: `{last_updated_label}`")
+        st.markdown("- Recommended ingestion: `data/portfolios/*.csv` + `data/portfolio_registry.json` in GitHub")
     with right:
         export_payload = {
             "summary": pd.DataFrame(

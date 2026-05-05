@@ -115,6 +115,57 @@ def inject_global_styles(theme_mode: str) -> dict[str, str]:
             backdrop-filter: blur(18px);
         }}
 
+        .market-tape {{
+            background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.018));
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            border-radius: 18px;
+            padding: 0.9rem 1rem;
+            margin-bottom: 1rem;
+            overflow-x: auto;
+            white-space: nowrap;
+            backdrop-filter: blur(18px);
+        }}
+
+        .market-tape-track {{
+            display: flex;
+            gap: 0.8rem;
+            min-width: max-content;
+        }}
+
+        .tape-card {{
+            min-width: 184px;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 0.8rem 0.85rem;
+            background: rgba(255,255,255,0.035);
+        }}
+
+        .tape-label {{
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--accent);
+            margin-bottom: 0.3rem;
+        }}
+
+        .tape-price {{
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.1;
+        }}
+
+        .tape-change {{
+            font-size: 0.82rem;
+            margin-top: 0.2rem;
+        }}
+
+        .tape-sparkline {{
+            width: 100%;
+            height: 36px;
+            margin-top: 0.45rem;
+        }}
+
         .brand-lockup {{
             display: flex;
             align-items: center;

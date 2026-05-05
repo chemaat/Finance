@@ -62,6 +62,7 @@ def _build_daily_change_table(frame: pd.DataFrame, label_map: dict[str, str]) ->
         series = frame[ticker].dropna()
         if len(series) < 2:
             continue
+        sparkline = [float(value) for value in series.tail(20).tolist()]
         last = series.iloc[-1]
         prev = series.iloc[-2]
         rows.append(
@@ -72,6 +73,7 @@ def _build_daily_change_table(frame: pd.DataFrame, label_map: dict[str, str]) ->
                 "change_points": float(last - prev),
                 "change_pct": float(last / prev - 1.0),
                 "last_date": series.index[-1],
+                "sparkline": sparkline,
             }
         )
     return pd.DataFrame(rows)
@@ -104,6 +106,7 @@ def build_market_snapshot(end_date: pd.Timestamp | None = None) -> dict[str, obj
 
     return {
         "indices": index_table,
+        "market_tape": index_table.copy(),
         "top_gainers": movers_table.head(5),
         "top_losers": movers_table.tail(5).sort_values("change_pct", ascending=True),
         "etfs": etf_table.sort_values("change_pct", ascending=False),

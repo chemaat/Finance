@@ -1,0 +1,12 @@
+{
+  "portfolios": [
+    {
+      "name": "MAIN GBM",
+      "path": "data/portfolios/main_gbm.csv"
+    },
+    {
+      "name": "LT KIA",
+      "path": "data/portfolios/lt_kia.csv"
+    }
+  ]
+}

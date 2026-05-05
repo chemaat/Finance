@@ -7,6 +7,13 @@ The app now supports two ingestion modes:
 - GBM holdings snapshot exports (`.xlsx`)
 - Transaction-ledger portfolio exports (`.csv`) with trade dates, purchase prices, cash flows, and FIFO-derived open positions
 
+Recommended production workflow:
+
+- Store canonical portfolio files in `data/portfolios/`
+- Register them in `data/portfolio_registry.json`
+- Let GitHub be the source of truth
+- Streamlit Cloud will update only when the repository file changes and a new deploy is triggered
+
 This workspace now has two entry points:
 
 - `portfolio_core.py`: reusable analytics module for loading GBM exports, normalizing holdings, downloading market and FX data, computing metrics, and exporting Excel.
@@ -40,12 +47,43 @@ What to upload:
 - `portfolio_analysis.py`
 - `requirements.txt`
 - `README.md`
+- `data/portfolios/*.csv` or `data/portfolios/*.xlsx`
+- `data/portfolio_registry.json`
 
 Do not upload:
 
 - `.pythonlibs/`
 - `outputs/`
 - `__pycache__/`
+
+## Portfolio Registry
+
+To move away from manual uploads, create:
+
+- `data/portfolio_registry.json`
+
+You can start from:
+
+- `data/portfolio_registry.example.json`
+
+Suggested setup for your two portfolios:
+
+```json
+{
+  "portfolios": [
+    {
+      "name": "MAIN GBM",
+      "path": "data/portfolios/main_gbm.csv"
+    },
+    {
+      "name": "LT KIA",
+      "path": "data/portfolios/lt_kia.csv"
+    }
+  ]
+}
+```
+
+With that setup, the app can auto-load those portfolios directly from the repo without needing a manual upload every time.
 
 ## Streamlit Dashboard
 

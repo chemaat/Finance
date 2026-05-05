@@ -36,6 +36,65 @@ def render_shell_topbar(last_updated: str, benchmark_label: str, portfolio_label
     )
 
 
+def _sparkline_svg(points: list[float], tone: str, theme: dict[str, str]) -> str:
+    if not points:
+        return ""
+    color = {
+        "up": theme["success"],
+        "down": theme["danger"],
+        "flat": theme["accent"],
+    }.get(tone, theme["accent"])
+    width = 140.0
+    height = 36.0
+    min_v = min(points)
+    max_v = max(points)
+    spread = max(max_v - min_v, 1e-9)
+    coords = []
+    for idx, value in enumerate(points):
+        x = (idx / max(len(points) - 1, 1)) * width
+        y = height - ((value - min_v) / spread) * (height - 2.0) - 1.0
+        coords.append(f"{x:.2f},{y:.2f}")
+    return (
+        f'<svg class="tape-sparkline" viewBox="0 0 {width:.0f} {height:.0f}" preserveAspectRatio="none">'
+        f'<polyline fill="none" stroke="{color}" stroke-width="2.4" points="{" ".join(coords)}" />'
+        "</svg>"
+    )
+
+
+def render_market_tape(frame: pd.DataFrame, theme: dict[str, str]) -> None:
+    if frame.empty:
+        return
+    cards: list[str] = []
+    for row in frame.itertuples(index=False):
+        tone = tone_from_value(getattr(row, "change_pct", 0.0))
+        tone_class = {
+            "up": "value-up",
+            "down": "value-down",
+            "flat": "value-flat",
+        }.get(tone, "value-flat")
+        sparkline = _sparkline_svg(getattr(row, "sparkline", []) or [], tone, theme)
+        cards.append(
+            f"""
+            <div class="tape-card">
+              <div class="tape-label">{row.asset}</div>
+              <div class="tape-price">{row.last:,.2f}</div>
+              <div class="tape-change {tone_class}">{row.change_points:+,.2f} · {row.change_pct:+.2%}</div>
+              {sparkline}
+            </div>
+            """
+        )
+    st.markdown(
+        f"""
+        <div class="market-tape">
+          <div class="market-tape-track">
+            {''.join(cards)}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_kpi_card(label: str, value: str, footnote: str = "", tone: str = "flat") -> None:
     tone_class = {
         "up": "value-up",
