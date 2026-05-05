@@ -3,16 +3,22 @@
     {
       "name": "MAIN GBM",
       "path": "data/portfolios/main_gbm.csv",
-      "sha256": "6390e78f0eb1bbcc28d79b3d737d068f0d8aec46d40f2628396ccbcf5476fec6",
-      "file_size_bytes": 4883,
-      "synced_at": "2026-05-05T19:35:21.397252+00:00",
-      "source_modified_at": "2026-05-04T21:42:51.638827+00:00",
-      "source_file_name": "portfolio (3).csv",
+      "sha256": "e5f586e21593b0071eb6ed2bb1c567448457b81ea1b0e547bc59113c697484a2",
+      "file_size_bytes": 4902,
+      "synced_at": "2026-05-05T19:42:22.427162+00:00",
+      "source_modified_at": "2026-05-05T19:41:11.953523+00:00",
+      "source_file_name": "MAIN GBM.csv",
       "last_sync_changed": true
     },
     {
       "name": "LT KIA",
-      "path": "data/portfolios/lt_kia.csv"
+      "path": "data/portfolios/lt_kia.csv",
+      "sha256": "cf0fa327840b2808fc1c9cb310bcf104593169305dfb844d000f6407b5724035",
+      "file_size_bytes": 2172,
+      "synced_at": "2026-05-05T19:42:22.427023+00:00",
+      "source_modified_at": "2026-05-05T19:41:30.467128+00:00",
+      "source_file_name": "LT KIA.csv",
+      "last_sync_changed": true
     }
   ]
 }

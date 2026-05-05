@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +21,25 @@ from portfolio_registry import (
 
 
 ROOT = Path(__file__).resolve().parent
+LOCK_PATH = ROOT / "data" / ".portfolio_registry.lock"
+
+
+class RegistryLock:
+    def __enter__(self) -> "RegistryLock":
+        deadline = time.time() + 15.0
+        while True:
+            try:
+                fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                return self
+            except FileExistsError:
+                if time.time() >= deadline:
+                    raise TimeoutError("Timed out waiting for the portfolio registry lock.")
+                time.sleep(0.1)
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if LOCK_PATH.exists():
+            LOCK_PATH.unlink()
 
 
 def load_payload() -> dict:
@@ -51,30 +72,31 @@ def main() -> int:
     if changed:
         shutil.copy2(source, target)
 
-    payload = load_payload()
-    relative_path = str(target.relative_to(ROOT))
-    source_modified_at = datetime.fromtimestamp(source.stat().st_mtime, tz=timezone.utc).isoformat()
-    updated_record = build_registry_record(
-        name=args.name,
-        relative_path=relative_path,
-        file_path=target,
-        source_file_name=source.name,
-        source_modified_at=source_modified_at,
-    )
-    updated_record["last_sync_changed"] = changed
+    with RegistryLock():
+        payload = load_payload()
+        relative_path = str(target.relative_to(ROOT))
+        source_modified_at = datetime.fromtimestamp(source.stat().st_mtime, tz=timezone.utc).isoformat()
+        updated_record = build_registry_record(
+            name=args.name,
+            relative_path=relative_path,
+            file_path=target,
+            source_file_name=source.name,
+            source_modified_at=source_modified_at,
+        )
+        updated_record["last_sync_changed"] = changed
 
-    portfolios = []
-    replaced = False
-    for item in payload.get("portfolios", []):
-        if item.get("name") == args.name:
+        portfolios = []
+        replaced = False
+        for item in payload.get("portfolios", []):
+            if item.get("name") == args.name:
+                portfolios.append(updated_record)
+                replaced = True
+            else:
+                portfolios.append(item)
+        if not replaced:
             portfolios.append(updated_record)
-            replaced = True
-        else:
-            portfolios.append(item)
-    if not replaced:
-        portfolios.append(updated_record)
-    payload["portfolios"] = portfolios
-    save_portfolio_registry(payload)
+        payload["portfolios"] = portfolios
+        save_portfolio_registry(payload)
 
     print(
         {
